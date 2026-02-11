@@ -6,6 +6,7 @@
 #include <vector>
 #include <cstdint>
 #include <chrono>
+#include <functional>
 
 namespace koraav {
 
