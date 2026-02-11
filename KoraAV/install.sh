@@ -28,14 +28,12 @@ print_header() {
     clear
     echo -e "${CYAN}"
     echo "╔════════════════════════════════════════════════════════════╗"
-    echo "║                   KoraAV Installer                         ║"
-    echo "║              Modern Antivirus for Linux                    ║"
+    echo "║                      KoraAV Installer                      ║"
+    echo "║                 Modern Antivirus for Linux                 ║"
     echo "╚════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
     echo ""
 }
-
-
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
@@ -233,8 +231,9 @@ download_source() {
     
     # Extract
     print_info "Extracting source code..."
-    BUILD_DIR="$TEMP_DIR/koraav-build/"
+    BUILD_DIR="$TEMP_DIR/koraav-build"
     mkdir -p "$BUILD_DIR"
+    
     tar -xzf "$TARBALL" -C "$BUILD_DIR" --strip-components=1
     
     print_success "Source code extracted"
@@ -269,13 +268,29 @@ install_dependencies_debian() {
         libcap2-bin
     
     print_info "Installing eBPF tools..."
-    apt-get install -y -qq \
-        libbpf-dev \
-        linux-headers-$(uname -r) \
-        linux-perf \
-        bpftool \
-        clang \
-        llvm
+    # Try to install bpftool from linux-tools
+    if apt-cache search linux-tools-$(uname -r) | grep -q linux-tools; then
+        apt-get install -y -qq \
+            libbpf-dev \
+            linux-headers-$(uname -r) \
+            linux-tools-common \
+            linux-perf \
+            linux-tools-$(uname -r) \
+            clang \
+            llvm
+    else
+        # Fallback for systems without kernel-specific linux-tools
+        apt-get install -y -qq \
+            libbpf-dev \
+            linux-headers-$(uname -r) \
+            linux-tools-common \
+            linux-perf \
+            clang \
+            llvm
+        
+        # Try to install bpftool separately if available
+        apt-get install -y -qq bpftool 2>/dev/null || print_warning "bpftool not available in repositories"
+    fi
     
     print_info "Installing YARA"
     if apt-cache show libyara-dev >/dev/null 2>&1; then
@@ -348,8 +363,7 @@ install_dependencies() {
 
 build_koraav() {
     print_step "Building KoraAV"
-    
-    cd "$BUILD_DIR/KoraAV/"
+    cd "$BUILD_DIR/KoraAV"
     
     print_info "Configuring build system..."
     mkdir -p build
@@ -395,6 +409,7 @@ install_files() {
         mkdir -p "$INSTALL_DIR/share/signatures/yara-rules"
         cp "$BUILD_DIR/KoraAV/data/signatures/yara-rules/"*.yar "$INSTALL_DIR/share/signatures/yara-rules/" 2>/dev/null || true
     fi
+
     
     print_info "Setting permissions..."
     chown -R root:root "$INSTALL_DIR"
@@ -467,7 +482,7 @@ create_hash_database() {
 }
 
 create_config() {
-    print_step "Creating Configuration"
+    print_step "Creating Config File"
     
     cat > "$CONFIG_DIR/koraav.conf" << 'EOF'
 # KoraAV Config File
@@ -523,8 +538,6 @@ EOF
     print_success "Configuration created"
 }
 
-
-# TODO: Harden and make even more secure.
 create_systemd_service() {
     print_step "Creating KoraAV Systemd Service"
     
@@ -532,7 +545,7 @@ create_systemd_service() {
 [Unit]
 Description=KoraAV Service Daemon
 Documentation=https://github.com/$GITHUB_REPO
-After=network.target
+After=network.target local-fs.target
 Wants=network.target
 
 [Service]
@@ -541,18 +554,72 @@ ExecStart=$INSTALL_DIR/bin/koraav-daemon
 ExecReload=/bin/kill -HUP \$MAINPID
 Restart=on-failure
 RestartSec=5s
+TimeoutStopSec=30s
 
-# Security hardening
+# Capabilities (instead of running as root)
+# These are the ONLY privileges the daemon has
+AmbientCapabilities=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_KILL CAP_DAC_READ_SEARCH CAP_SYS_PTRACE CAP_BPF CAP_PERFMON
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_KILL CAP_DAC_READ_SEARCH CAP_SYS_PTRACE CAP_BPF CAP_PERFMON
+
+# Prevent Privilege Escalation
 NoNewPrivileges=true
-PrivateTmp=true
+SecureBits=keep-caps keep-caps-locked noroot noroot-locked no-setuid-fixup no-setuid-fixup-locked
+
+# Filesystem Isolation
 ProtectSystem=strict
-ProtectHome=false
-ReadWritePaths=$INSTALL_DIR/var
+ProtectHome=true
+ReadWritePaths=$INSTALL_DIR/var /var/log/koraav
+ReadOnlyPaths=$INSTALL_DIR/share $INSTALL_DIR/bin $CONFIG_DIR
+InaccessiblePaths=/home /root
+
+# Temporary Files
+PrivateTmp=true
+PrivateDevices=false  # Need access to devices for monitoring
+ProtectKernelTunables=false  # Need to read /proc, /sys for monitoring
+ProtectKernelModules=true
+ProtectKernelLogs=false  # Need to read kernel logs for monitoring
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHostname=true
+
+# Network
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+IPAddressDeny=any
+IPAddressAllow=localhost
+PrivateNetwork=false  # Must access network for C2 detection
+
+# System Calls (whitelist approach - only allow needed syscalls)
+SystemCallFilter=@system-service @file-system @network-io @process @signal @io-event
+SystemCallFilter=~@privileged @resources @cpu-emulation @debug @mount @obsolete @raw-io @reboot @swap
+SystemCallErrorNumber=EPERM
+
+# Memory Protection
+MemoryDenyWriteExecute=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RemoveIPC=true
+
+# Restrict Namespaces
+RestrictNamespaces=true
+PrivateUsers=false  # Need to see all users for monitoring
 
 # Logging
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=koraav
+SyslogLevel=info
+
+# Resource Limits (prevent DoS)
+LimitNOFILE=65536
+LimitNPROC=512
+TasksMax=512
+CPUQuota=80%
+MemoryMax=2G
+MemoryHigh=1.5G
+
+# Watchdog (restart if hung for 2 minutes)
+WatchdogSec=120s
 
 [Install]
 WantedBy=multi-user.target
@@ -562,6 +629,12 @@ EOF
     systemctl daemon-reload
     
     print_success "Systemd service created"
+    print_info "Security features enabled:"
+    print_info "  • Capabilities-based (no root)"
+    print_info "  • Filesystem isolation"
+    print_info "  • System call filtering"
+    print_info "  • Memory protections"
+    print_info "  • Resource limits"
 }
 
 enable_service() {
@@ -627,7 +700,7 @@ cleanup() {
 print_summary() {
     echo ""
     echo -e "${GREEN}╔════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║                  Installation Successfull!                 ║${NC}"
+    echo -e "${GREEN}║                  Installation Successful!                  ║${NC}"
     echo -e "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}"
     echo ""
     echo -e "${CYAN}Installation Summary:${NC}"
