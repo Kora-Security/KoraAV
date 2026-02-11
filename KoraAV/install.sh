@@ -35,6 +35,8 @@ print_header() {
     echo ""
 }
 
+
+
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
 }
@@ -270,8 +272,8 @@ install_dependencies_debian() {
     apt-get install -y -qq \
         libbpf-dev \
         linux-headers-$(uname -r) \
-        linux-tools-common \
-        linux-tools-generic \
+        linux-perf \
+        bpftool \
         clang \
         llvm
     
@@ -347,7 +349,7 @@ install_dependencies() {
 build_koraav() {
     print_step "Building KoraAV"
     
-    cd "$BUILD_DIR"
+    cd "$BUILD_DIR/KoraAV/"
     
     print_info "Configuring build system..."
     mkdir -p build
