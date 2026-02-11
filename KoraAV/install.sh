@@ -233,7 +233,7 @@ download_source() {
     
     # Extract
     print_info "Extracting source code..."
-    BUILD_DIR="$TEMP_DIR/koraav-build"
+    BUILD_DIR="$TEMP_DIR/koraav-build/"
     mkdir -p "$BUILD_DIR"
     tar -xzf "$TARBALL" -C "$BUILD_DIR" --strip-components=1
     
@@ -382,18 +382,18 @@ install_files() {
     mkdir -p "$CONFIG_DIR"
     
     print_info "Installing binaries..."
-    cp "$BUILD_DIR/build/bin/"* "$INSTALL_DIR/bin/"
+    cp "$BUILD_DIR/KoraAV/build/bin/"* "$INSTALL_DIR/bin/"
     chmod 755 "$INSTALL_DIR/bin/"*
     
     print_info "Installing BPF programs..."
-    if ls "$BUILD_DIR/build/lib/bpf/"*.bpf.o >/dev/null 2>&1; then
-        cp "$BUILD_DIR/build/lib/bpf/"*.bpf.o "$INSTALL_DIR/lib/bpf/" 2>/dev/null || true
+    if ls "$BUILD_DIR/KoraAV/build/lib/bpf/"*.bpf.o >/dev/null 2>&1; then
+        cp "$BUILD_DIR/KoraAV/build/lib/bpf/"*.bpf.o "$INSTALL_DIR/lib/bpf/" 2>/dev/null || true
     fi
     
     print_info "Installing YARA rules..."
-    if [ -d "$BUILD_DIR/data/signatures/yara-rules" ]; then
+    if [ -d "$BUILD_DIR/KoraAV/data/signatures/yara-rules" ]; then
         mkdir -p "$INSTALL_DIR/share/signatures/yara-rules"
-        cp "$BUILD_DIR/data/signatures/yara-rules/"*.yar "$INSTALL_DIR/share/signatures/yara-rules/" 2>/dev/null || true
+        cp "$BUILD_DIR/KoraAV/data/signatures/yara-rules/"*.yar "$INSTALL_DIR/share/signatures/yara-rules/" 2>/dev/null || true
     fi
     
     print_info "Setting permissions..."
