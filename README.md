@@ -9,4 +9,7 @@ __ __
 <br>
 
 # KoraAV
+
 WIP - Kora Antivirus.
+
+<img width="164" height="164" alt="2026-02-08_14-27" src="https://github.com/user-attachments/assets/195552f2-08c2-4970-83c7-8922010b79a2" />
