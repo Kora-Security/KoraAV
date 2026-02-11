@@ -4,6 +4,7 @@
 #include <iostream>
 #include <unistd.h>
 #include <pwd.h>
+#include <algorithm>
 
 namespace fs = std::filesystem;
 
