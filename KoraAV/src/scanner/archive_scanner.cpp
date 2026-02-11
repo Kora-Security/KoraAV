@@ -120,7 +120,6 @@ std::vector<FileScanResult> ArchiveScanner::ScanArchive(
         return threats;
     }
     
-    // TODO: If zip bomb, etc. detected, stop it.
     try {
         // Scan all extracted files
         for (const auto& entry : fs::recursive_directory_iterator(temp_dir)) {
