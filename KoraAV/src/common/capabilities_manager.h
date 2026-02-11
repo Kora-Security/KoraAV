@@ -53,7 +53,7 @@ public:
 
 private:
     bool CheckCapability(int cap);
-    int CapabilityFromName(const std::string& name);
+    static int CapabilityFromName(const std::string& name);
     std::string CapabilityToName(int cap);
 };
 
