@@ -3,6 +3,7 @@
 #include <chrono>
 #include <filesystem>
 #include <iostream>
+#include <algorithm>
 
 namespace fs = std::filesystem;
 
