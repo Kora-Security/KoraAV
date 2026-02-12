@@ -4,6 +4,7 @@
 #include <sstream>
 #include <iostream>
 #include <cstdlib>
+#include <cstring>
 #include <sys/mount.h>
 #include <mntent.h>
 
@@ -174,7 +175,10 @@ LockdownManager::LockdownStatus LockdownManager::GetStatus() const {
     return status;
 }
 
-bool LockdownManager::EmergencyUnlock(const std::string& admin_password) {
+bool LockdownManager::EmergencyUnlock(const std::string& /* admin_password */) {
+    // Note: admin_password parameter reserved for future authentication mechanism
+    // Currently using capabilities-based authentication instead
+    
     // Check for required capabilities instead of password
     if (!caps_manager_->HasCapability("CAP_SYS_ADMIN") || 
         !caps_manager_->HasCapability("CAP_NET_ADMIN")) {

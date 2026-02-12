@@ -11,7 +11,7 @@ namespace koraav {
 namespace scanner {
 
 // Callback for YARA rule matches
-static int yara_callback(YR_SCAN_CONTEXT* context, int message, void* message_data, void* user_data) {
+static int yara_callback(YR_SCAN_CONTEXT* /* context */, int message, void* message_data, void* user_data) {
     if (message == CALLBACK_MSG_RULE_MATCHING) {
         YR_RULE* rule = (YR_RULE*)message_data;
         auto* matches = static_cast<std::vector<std::string>*>(user_data);

@@ -83,6 +83,9 @@ private:
     ScanConfig config_;
     FileScanner file_scanner_;
     
+    // Progress callback
+    ProgressCallback progress_callback_;
+    
     // Threading
     std::atomic<bool> is_scanning_;
     std::atomic<bool> cancel_requested_;

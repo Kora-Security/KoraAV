@@ -93,6 +93,9 @@ ScanResults ScannerEngine::ExecuteScan(const std::vector<std::string>& root_path
         throw std::runtime_error("Scan already in progress");
     }
     
+    // Save progress callback for worker threads
+    progress_callback_ = progress;
+    
     // Initialize results
     current_results_ = ScanResults();
     current_results_.scan_type = scan_type;
@@ -201,6 +204,17 @@ void ScannerEngine::ScanWorker() {
             
             // Record result
             RecordResult(result);
+            
+            // Call progress callback
+            if (progress_callback_) {
+                uint64_t scanned, threats;
+                {
+                    std::lock_guard<std::mutex> lock(results_mutex_);
+                    scanned = current_results_.files_scanned;
+                    threats = current_results_.threats_found;
+                }
+                progress_callback_(path, scanned, threats);
+            }
             
         } catch (const std::exception& e) {
             std::cerr << "Error scanning " << path << ": " << e.what() << std::endl;

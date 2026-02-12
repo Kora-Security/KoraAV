@@ -10,7 +10,7 @@
 
 namespace fs = std::filesystem;
 
-void print_usage(const char* prog) {
+void print_usage(const char* /* prog */) {
     std::cout << R"(
 KoraAV Rule Manager Help- Manage YARA detection rules
 
