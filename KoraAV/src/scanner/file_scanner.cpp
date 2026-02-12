@@ -10,8 +10,7 @@
 #include <fstream>
 #include <filesystem>
 #include <iostream>
-#include <openssl/md5.h>
-#include <openssl/sha.h>
+#include <openssl/evp.h>
 
 namespace fs = std::filesystem;
 
@@ -196,23 +195,43 @@ std::string FileScanner::CalculateMD5(const std::string& path) {
         return "";
     }
     
-    MD5_CTX md5_ctx;
-    MD5_Init(&md5_ctx);
+    // Create EVP context
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    if (!ctx) {
+        return "";
+    }
     
+    // Initialize MD5
+    if (EVP_DigestInit_ex(ctx, EVP_md5(), nullptr) != 1) {
+        EVP_MD_CTX_free(ctx);
+        return "";
+    }
+    
+    // Read and hash file
     char buffer[8192];
     while (file.read(buffer, sizeof(buffer)) || file.gcount() > 0) {
-        MD5_Update(&md5_ctx, buffer, file.gcount());
+        if (EVP_DigestUpdate(ctx, buffer, file.gcount()) != 1) {
+            EVP_MD_CTX_free(ctx);
+            return "";
+        }
     }
     
-    unsigned char hash[MD5_DIGEST_LENGTH];
-    MD5_Final(hash, &md5_ctx);
+    // Finalize hash
+    unsigned char hash[EVP_MAX_MD_SIZE];
+    unsigned int hash_len = 0;
+    if (EVP_DigestFinal_ex(ctx, hash, &hash_len) != 1) {
+        EVP_MD_CTX_free(ctx);
+        return "";
+    }
+    
+    EVP_MD_CTX_free(ctx);
     
     // Convert to hex string
-    char hex[MD5_DIGEST_LENGTH * 2 + 1];
-    for (int i = 0; i < MD5_DIGEST_LENGTH; i++) {
+    char hex[EVP_MAX_MD_SIZE * 2 + 1];
+    for (unsigned int i = 0; i < hash_len; i++) {
         sprintf(hex + i * 2, "%02x", hash[i]);
     }
-    hex[MD5_DIGEST_LENGTH * 2] = '\0';
+    hex[hash_len * 2] = '\0';
     
     return std::string(hex);
 }
@@ -223,23 +242,43 @@ std::string FileScanner::CalculateSHA256(const std::string& path) {
         return "";
     }
     
-    SHA256_CTX sha256_ctx;
-    SHA256_Init(&sha256_ctx);
+    // Create EVP context
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    if (!ctx) {
+        return "";
+    }
     
+    // Initialize SHA256
+    if (EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr) != 1) {
+        EVP_MD_CTX_free(ctx);
+        return "";
+    }
+    
+    // Read and hash file
     char buffer[8192];
     while (file.read(buffer, sizeof(buffer)) || file.gcount() > 0) {
-        SHA256_Update(&sha256_ctx, buffer, file.gcount());
+        if (EVP_DigestUpdate(ctx, buffer, file.gcount()) != 1) {
+            EVP_MD_CTX_free(ctx);
+            return "";
+        }
     }
     
-    unsigned char hash[SHA256_DIGEST_LENGTH];
-    SHA256_Final(hash, &sha256_ctx);
+    // Finalize hash
+    unsigned char hash[EVP_MAX_MD_SIZE];
+    unsigned int hash_len = 0;
+    if (EVP_DigestFinal_ex(ctx, hash, &hash_len) != 1) {
+        EVP_MD_CTX_free(ctx);
+        return "";
+    }
+    
+    EVP_MD_CTX_free(ctx);
     
     // Convert to hex string
-    char hex[SHA256_DIGEST_LENGTH * 2 + 1];
-    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+    char hex[EVP_MAX_MD_SIZE * 2 + 1];
+    for (unsigned int i = 0; i < hash_len; i++) {
         sprintf(hex + i * 2, "%02x", hash[i]);
     }
-    hex[SHA256_DIGEST_LENGTH * 2] = '\0';
+    hex[hash_len * 2] = '\0';
     
     return std::string(hex);
 }
