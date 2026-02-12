@@ -4,12 +4,19 @@
 #include <filesystem>
 #include <cstdlib>
 #include <iostream>
+#include <algorithm>
 #include <unistd.h>
 
 namespace fs = std::filesystem;
 
 namespace koraav {
 namespace scanner {
+
+// Helper function for C++17 compatibility (ends_with is C++20)
+static bool ends_with(const std::string& str, const std::string& suffix) {
+    if (suffix.length() > str.length()) return false;
+    return str.compare(str.length() - suffix.length(), suffix.length(), suffix) == 0;
+}
 
 bool ArchiveScanner::IsArchive(const std::string& path) {
     return DetectArchiveType(path) != ArchiveType::UNKNOWN;
@@ -19,13 +26,13 @@ ArchiveScanner::ArchiveType ArchiveScanner::DetectArchiveType(const std::string&
     std::string lower_path = path;
     std::transform(lower_path.begin(), lower_path.end(), lower_path.begin(), ::tolower);
     
-    if (lower_path.ends_with(".zip")) return ArchiveType::ZIP;
-    if (lower_path.ends_with(".tar")) return ArchiveType::TAR;
-    if (lower_path.ends_with(".tar.gz") || lower_path.ends_with(".tgz")) return ArchiveType::TAR_GZ;
-    if (lower_path.ends_with(".tar.bz2") || lower_path.ends_with(".tbz2")) return ArchiveType::TAR_BZ2;
-    if (lower_path.ends_with(".tar.xz") || lower_path.ends_with(".txz")) return ArchiveType::TAR_XZ;
-    if (lower_path.ends_with(".7z")) return ArchiveType::SEVEN_ZIP;
-    if (lower_path.ends_with(".rar")) return ArchiveType::RAR;
+    if (ends_with(lower_path, ".zip")) return ArchiveType::ZIP;
+    if (ends_with(lower_path, ".tar")) return ArchiveType::TAR;
+    if (ends_with(lower_path, ".tar.gz") || ends_with(lower_path, ".tgz")) return ArchiveType::TAR_GZ;
+    if (ends_with(lower_path, ".tar.bz2") || ends_with(lower_path, ".tbz2")) return ArchiveType::TAR_BZ2;
+    if (ends_with(lower_path, ".tar.xz") || ends_with(lower_path, ".txz")) return ArchiveType::TAR_XZ;
+    if (ends_with(lower_path, ".7z")) return ArchiveType::SEVEN_ZIP;
+    if (ends_with(lower_path, ".rar")) return ArchiveType::RAR;
     
     return ArchiveType::UNKNOWN;
 }
