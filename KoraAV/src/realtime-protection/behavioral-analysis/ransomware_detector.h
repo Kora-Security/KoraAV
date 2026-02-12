@@ -5,6 +5,7 @@
 #include "../yara-realtime/realtime_yara_scanner.h"
 #include <string>
 #include <vector>
+#include <set>
 #include <unordered_set>
 #include <unordered_map>
 #include <memory>
@@ -65,7 +66,7 @@ public:
     
     /**
      * Add path pattern to whitelist
-     * Example: "/home/user/dev/*" for development directories
+     * Example: "/home/user/dev/star" for development directories (use * for wildcard)
      */
     void WhitelistPath(const std::string& pattern);
     
@@ -154,7 +155,7 @@ private:
     /**
      * Check if process behavior confirms ransomware
      */
-    bool IsConfirmedRansomware(const ProcessActivity& activity);
+    bool IsConfirmedRansomware(const ProcessActivity& activity) const;
     
     /**
      * Quarantine the malicious binary

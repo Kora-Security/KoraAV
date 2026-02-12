@@ -4,6 +4,8 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <signal.h>
+#include <limits.h>
 #include <cstring>
 #include <cmath>
 #include <iostream>
@@ -355,7 +357,7 @@ bool RansomwareDetector::TrackAndDecideAction(uint32_t pid, const std::string& f
     return IsConfirmedRansomware(activity);
 }
 
-bool RansomwareDetector::IsConfirmedRansomware(const ProcessActivity& activity) {
+bool RansomwareDetector::IsConfirmedRansomware(const ProcessActivity& activity) const {
     // Already killed/handled
     if (activity.killed) {
         return false;
