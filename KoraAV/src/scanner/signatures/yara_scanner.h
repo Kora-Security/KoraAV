@@ -5,10 +5,7 @@
 #include <string>
 #include <vector>
 #include <memory>
-
-// Forward declare YARA types to avoid including yara.h in header
-typedef struct _YR_RULES YR_RULES;
-typedef struct _YR_COMPILER YR_COMPILER;
+#include <yara.h>
 
 namespace koraav {
 namespace scanner {
