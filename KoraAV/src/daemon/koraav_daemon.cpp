@@ -12,6 +12,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <ctime>
+#include <cerrno>
 #include <fcntl.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
@@ -20,9 +21,18 @@ namespace koraav {
 namespace daemon {
 
 KoraAVDaemon::KoraAVDaemon() 
-    : file_monitor_fd_(-1),
+    : file_monitor_obj_(nullptr),
+      process_monitor_obj_(nullptr),
+      network_monitor_obj_(nullptr),
+      file_monitor_prog_(nullptr),
+      process_monitor_prog_(nullptr),
+      network_monitor_prog_(nullptr),
+      file_monitor_fd_(-1),
       process_monitor_fd_(-1),
       network_monitor_fd_(-1),
+      file_monitor_link_(nullptr),
+      process_monitor_link_(nullptr),
+      network_monitor_link_(nullptr),
       file_events_ringbuf_(nullptr),
       process_events_ringbuf_(nullptr),
       network_events_ringbuf_(nullptr),
@@ -61,11 +71,11 @@ bool KoraAVDaemon::Initialize(const std::string& config_path) {
         if (!LoadeBPFPrograms()) {
             std::cerr << "Warning: eBPF programs not loaded (may not be available)" << std::endl;
         } else {
-            std::cout << "✓ eBPF programs loaded" << std::endl;
+            std::cout << "eBPF programs loaded" << std::endl;
             if (!AttacheBPFProbes()) {
                 std::cerr << "Warning: Failed to attach eBPF probes" << std::endl;
             } else {
-                std::cout << "✓ eBPF probes attached" << std::endl;
+                std::cout << "eBPF probes attached" << std::endl;
             }
         }
     }
@@ -76,7 +86,7 @@ bool KoraAVDaemon::Initialize(const std::string& config_path) {
         if (!infostealer_detector_->Initialize()) {
             std::cerr << "Failed to initialize info stealer detector" << std::endl;
         } else {
-            std::cout << "✓ Info stealer detector initialized" << std::endl;
+            std::cout << "Info stealer detector initialized" << std::endl;
         }
     }
     
@@ -85,7 +95,7 @@ bool KoraAVDaemon::Initialize(const std::string& config_path) {
         if (!ransomware_detector_->Initialize()) {
             std::cerr << "Failed to initialize ransomware detector" << std::endl;
         } else {
-            std::cout << "✓ Ransomware detector initialized" << std::endl;
+            std::cout << "Ransomware detector initialized" << std::endl;
         }
     }
     
@@ -94,11 +104,11 @@ bool KoraAVDaemon::Initialize(const std::string& config_path) {
         if (!clickfix_detector_->Initialize()) {
             std::cerr << "Failed to initialize ClickFix detector" << std::endl;
         } else {
-            std::cout << "✓ ClickFix detector initialized" << std::endl;
+            std::cout << "ClickFix detector initialized" << std::endl;
         }
     }
     
-    std::cout << "✓ KoraAV Daemon initialized successfully" << std::endl;
+    std::cout << "KoraAV Daemon has been initialized successfully!" << std::endl;
     return true;
 }
 
@@ -228,6 +238,19 @@ void KoraAVDaemon::Stop() {
     }
     
     // Cleanup eBPF resources
+    if (file_monitor_link_) {
+        bpf_link__destroy(file_monitor_link_);
+        file_monitor_link_ = nullptr;
+    }
+    if (process_monitor_link_) {
+        bpf_link__destroy(process_monitor_link_);
+        process_monitor_link_ = nullptr;
+    }
+    if (network_monitor_link_) {
+        bpf_link__destroy(network_monitor_link_);
+        network_monitor_link_ = nullptr;
+    }
+    
     if (file_events_ringbuf_) {
         ring_buffer__free((struct ring_buffer*)file_events_ringbuf_);
         file_events_ringbuf_ = nullptr;
@@ -241,9 +264,22 @@ void KoraAVDaemon::Stop() {
         network_events_ringbuf_ = nullptr;
     }
     
-    if (file_monitor_fd_ >= 0) close(file_monitor_fd_);
-    if (process_monitor_fd_ >= 0) close(process_monitor_fd_);
-    if (network_monitor_fd_ >= 0) close(network_monitor_fd_);
+    if (file_monitor_obj_) {
+        bpf_object__close(file_monitor_obj_);
+        file_monitor_obj_ = nullptr;
+    }
+    if (process_monitor_obj_) {
+        bpf_object__close(process_monitor_obj_);
+        process_monitor_obj_ = nullptr;
+    }
+    if (network_monitor_obj_) {
+        bpf_object__close(network_monitor_obj_);
+        network_monitor_obj_ = nullptr;
+    }
+    
+    file_monitor_fd_ = -1;
+    process_monitor_fd_ = -1;
+    network_monitor_fd_ = -1;
     
     std::cout << "✓ KoraAV stopped" << std::endl;
 }
@@ -315,7 +351,7 @@ bool KoraAVDaemon::LoadConfiguration(const std::string& config_path) {
         }
     }
     
-    std::cout << "✓ Configuration loaded" << std::endl;
+    std::cout << "KoraAV Config Loaded!" << std::endl;
     return true;
 }
 
@@ -327,42 +363,75 @@ bool KoraAVDaemon::LoadeBPFPrograms() {
         "/opt/koraav/lib/bpf/network_monitor.bpf.o"
     };
     
-    // Check if files exist
     bool any_loaded = false;
     
     // Load file monitor
     if (access(bpf_paths[0], F_OK) == 0) {
-        struct bpf_object* obj = bpf_object__open(bpf_paths[0]);
-        if (obj) {
-            if (bpf_object__load(obj) == 0) {
-                file_monitor_fd_ = bpf_program__fd(bpf_object__find_program_by_name(obj, "monitor_file_open"));
-                any_loaded = true;
-                std::cout << "  ✓ File monitor loaded" << std::endl;
+        file_monitor_obj_ = bpf_object__open(bpf_paths[0]);
+        if (file_monitor_obj_) {
+            if (bpf_object__load(file_monitor_obj_) == 0) {
+                // Find the program by name
+                file_monitor_prog_ = bpf_object__find_program_by_name(file_monitor_obj_, "monitor_file_open");
+                if (file_monitor_prog_) {
+                    file_monitor_fd_ = bpf_program__fd(file_monitor_prog_);
+                    any_loaded = true;
+                    std::cout << "File monitor loaded" << std::endl;
+                } else {
+                    std::cerr << "Could not find monitor_file_open program" << std::endl;
+                }
+            } else {
+                std::cerr << "Failed to load file monitor object: " << strerror(errno) << std::endl;
+                bpf_object__close(file_monitor_obj_);
+                file_monitor_obj_ = nullptr;
             }
+        } else {
+            std::cerr << "Failed to open file monitor: " << strerror(errno) << std::endl;
         }
     }
     
     // Load process monitor
     if (access(bpf_paths[1], F_OK) == 0) {
-        struct bpf_object* obj = bpf_object__open(bpf_paths[1]);
-        if (obj) {
-            if (bpf_object__load(obj) == 0) {
-                process_monitor_fd_ = bpf_program__fd(bpf_object__find_program_by_name(obj, "monitor_process_exec"));
-                any_loaded = true;
-                std::cout << "  ✓ Process monitor loaded" << std::endl;
+        process_monitor_obj_ = bpf_object__open(bpf_paths[1]);
+        if (process_monitor_obj_) {
+            if (bpf_object__load(process_monitor_obj_) == 0) {
+                process_monitor_prog_ = bpf_object__find_program_by_name(process_monitor_obj_, "monitor_process_exec");
+                if (process_monitor_prog_) {
+                    process_monitor_fd_ = bpf_program__fd(process_monitor_prog_);
+                    any_loaded = true;
+                    std::cout << "Process monitor loaded" << std::endl;
+                } else {
+                    std::cerr << "Could not find monitor_process_exec program" << std::endl;
+                }
+            } else {
+                std::cerr << "Failed to load process monitor object: " << strerror(errno) << std::endl;
+                bpf_object__close(process_monitor_obj_);
+                process_monitor_obj_ = nullptr;
             }
+        } else {
+            std::cerr << "Failed to open process monitor: " << strerror(errno) << std::endl;
         }
     }
     
     // Load network monitor
     if (access(bpf_paths[2], F_OK) == 0) {
-        struct bpf_object* obj = bpf_object__open(bpf_paths[2]);
-        if (obj) {
-            if (bpf_object__load(obj) == 0) {
-                network_monitor_fd_ = bpf_program__fd(bpf_object__find_program_by_name(obj, "monitor_network_connect"));
-                any_loaded = true;
-                std::cout << "  ✓ Network monitor loaded" << std::endl;
+        network_monitor_obj_ = bpf_object__open(bpf_paths[2]);
+        if (network_monitor_obj_) {
+            if (bpf_object__load(network_monitor_obj_) == 0) {
+                network_monitor_prog_ = bpf_object__find_program_by_name(network_monitor_obj_, "monitor_network_connect");
+                if (network_monitor_prog_) {
+                    network_monitor_fd_ = bpf_program__fd(network_monitor_prog_);
+                    any_loaded = true;
+                    std::cout << "Network monitor loaded" << std::endl;
+                } else {
+                    std::cerr << "Could not find monitor_network_connect program" << std::endl;
+                }
+            } else {
+                std::cerr << "Failed to load network monitor object: " << strerror(errno) << std::endl;
+                bpf_object__close(network_monitor_obj_);
+                network_monitor_obj_ = nullptr;
             }
+        } else {
+            std::cerr << "Failed to open network monitor: " << strerror(errno) << std::endl;
         }
     }
     
@@ -371,21 +440,70 @@ bool KoraAVDaemon::LoadeBPFPrograms() {
 
 bool KoraAVDaemon::AttacheBPFProbes() {
     // Attach loaded programs to kernel hooks
-    // This would use bpf_program__attach() for tracepoints/kprobes
+    bool any_attached = false;
     
-    if (file_monitor_fd_ >= 0) {
-        // Attach to file open tracepoint
-        std::cout << "  ✓ File monitor attached" << std::endl;
+    if (file_monitor_prog_) {
+        // Attach to file open tracepoint (syscalls/sys_enter_openat)
+        file_monitor_link_ = bpf_program__attach_tracepoint(
+            file_monitor_prog_,
+            "syscalls",
+            "sys_enter_openat"
+        );
+        
+        if (file_monitor_link_) {
+            std::cout << "File monitor attached to sys_enter_openat" << std::endl;
+            any_attached = true;
+        } else {
+            std::cerr << "Failed to attach file monitor: " << strerror(errno) << std::endl;
+            // Try alternative tracepoint
+            file_monitor_link_ = bpf_program__attach_tracepoint(
+                file_monitor_prog_,
+                "syscalls",
+                "sys_enter_open"
+            );
+            if (file_monitor_link_) {
+                std::cout << "File monitor attached to sys_enter_open (fallback)" << std::endl;
+                any_attached = true;
+            }
+        }
     }
     
-    if (process_monitor_fd_ >= 0) {
-        // Attach to process exec tracepoint
-        std::cout << "  ✓ Process monitor attached" << std::endl;
+    if (process_monitor_prog_) {
+        // Attach to process exec tracepoint (sched/sched_process_exec)
+        process_monitor_link_ = bpf_program__attach_tracepoint(
+            process_monitor_prog_,
+            "sched",
+            "sched_process_exec"
+        );
+        
+        if (process_monitor_link_) {
+            std::cout << "Process monitor attached to sched_process_exec" << std::endl;
+            any_attached = true;
+        } else {
+            std::cerr << "Failed to attach process monitor: " << strerror(errno) << std::endl;
+        }
     }
     
-    if (network_monitor_fd_ >= 0) {
-        // Attach to network connect tracepoint
-        std::cout << "  ✓ Network monitor attached" << std::endl;
+    if (network_monitor_prog_) {
+        // Attach to network connect tracepoint (syscalls/sys_enter_connect)
+        network_monitor_link_ = bpf_program__attach_tracepoint(
+            network_monitor_prog_,
+            "syscalls",
+            "sys_enter_connect"
+        );
+        
+        if (network_monitor_link_) {
+            std::cout << "Network monitor attached to sys_enter_connect" << std::endl;
+            any_attached = true;
+        } else {
+            std::cerr << "Failed to attach network monitor: " << strerror(errno) << std::endl;
+        }
+    }
+    
+    if (!any_attached) {
+        std::cerr << "Warning: No eBPF programs were successfully attached" << std::endl;
+        std::cerr << "Real-time monitoring may not function correctly" << std::endl;
+        return false;
     }
     
     return true;
@@ -478,10 +596,10 @@ void KoraAVDaemon::HandleThreat(uint32_t pid, const std::string& threat_type,
                                 int score, const std::vector<std::string>& indicators) {
     LogThreat(pid, threat_type, score, indicators);
     
-    std::cout << "🚨 THREAT DETECTED: " << threat_type << " (PID " << pid << ", Score " << score << ")" << std::endl;
+    std::cout << "THREAT DETECTED: " << threat_type << " (PID " << pid << ", Score " << score << ")" << std::endl;
     
     if (score >= config_.lockdown_threshold && config_.auto_lockdown) {
-        std::cout << "⚠️  CRITICAL THREAT - Initiating system lockdown" << std::endl;
+        std::cout << "CRITICAL THREAT - Initiating system lockdown" << std::endl;
         LockdownSystem();
     } else if (score >= config_.block_threshold) {
         if (config_.auto_block_network) {
@@ -491,17 +609,17 @@ void KoraAVDaemon::HandleThreat(uint32_t pid, const std::string& threat_type,
             KillProcess(pid);
         }
     } else if (score >= config_.alert_threshold) {
-        std::cout << "⚠️  Alert threshold reached for PID " << pid << std::endl;
+        std::cout << "Alert threshold reached for PID " << pid << std::endl;
     }
 }
 
 void KoraAVDaemon::KillProcess(uint32_t pid) {
-    std::cout << "  → Killing malicious process PID " << pid << " (" << GetProcessName(pid) << ")" << std::endl;
+    std::cout << " --> Killing malicious process PID " << pid << " (" << GetProcessName(pid) << ")" << std::endl;
     kill(pid, SIGKILL);
 }
 
 void KoraAVDaemon::BlockProcessNetwork(uint32_t pid) {
-    std::cout << "  → Blocking network for PID " << pid << std::endl;
+    std::cout << " --> Blocking network for PID " << pid << std::endl;
     
     // Use nftables to block process
     std::string cmd = "nft add rule inet filter output meta skuid " + std::to_string(pid) + " drop 2>/dev/null";
@@ -513,10 +631,10 @@ void KoraAVDaemon::BlockProcessNetwork(uint32_t pid) {
 }
 
 void KoraAVDaemon::LockdownSystem() {
-    std::cout << "🔒 SYSTEM LOCKDOWN INITIATED" << std::endl;
+    std::cout << "SYSTEM LOCKDOWN INITIATED" << std::endl;
     
     // Remount filesystem read-only
-    std::cout << "  → Remounting filesystem read-only..." << std::endl;
+    std::cout << " --> Remounting filesystem read-only..." << std::endl;
     system("mount -o remount,ro / 2>/dev/null");
     
     // Block all network (except localhost)
@@ -526,7 +644,7 @@ void KoraAVDaemon::LockdownSystem() {
     system("nft add rule inet lockdown output oif lo accept 2>/dev/null");
     system("nft add rule inet lockdown output drop 2>/dev/null");
     
-    std::cout << "🔒 SYSTEM LOCKED - Use 'koraav unlock --all' to restore" << std::endl;
+    std::cout << "SYSTEM LOCKED - Use 'sudo koraav unlock --all' to restore" << std::endl;
 }
 
 void KoraAVDaemon::LogThreat(uint32_t pid, const std::string& threat_type,
