@@ -21,12 +21,12 @@ void signal_handler(int signal) {
 }
 
 void show_usage(const char* prog) {
-    std::cout << "KoraAV Real-Time Protection Daemon (Korad)\n" << std::endl;
+    std::cout << "KoraAV Daemon (Korad)\n" << std::endl;
     std::cout << "Usage: " << prog << " [options]\n" << std::endl;
     std::cout << "Options:" << std::endl;
     std::cout << "  -c <config>    Configuration file (default: /etc/koraav/koraav.conf)" << std::endl;
     std::cout << "  -f, --foreground    Run in foreground (don't daemonize)" << std::endl;
-    std::cout << "  -h, --help     Show this help" << std::endl;
+    std::cout << "  -h, --help     Show this help message" << std::endl;
     std::cout << "  -v, --version  Show version" << std::endl;
     std::cout << std::endl;
 }
@@ -68,7 +68,7 @@ int main(int argc, char** argv) {
     }
     
     std::cout << "╔════════════════════════════════════════════════════════════╗" << std::endl;
-    std::cout << "║              Korad - Real-Time Protection v0.4.0           ║" << std::endl;
+    std::cout << "║              Korad - Real-Time Protection v0.1.0           ║" << std::endl;
     std::cout << "╚════════════════════════════════════════════════════════════╝" << std::endl;
     std::cout << std::endl;
     
