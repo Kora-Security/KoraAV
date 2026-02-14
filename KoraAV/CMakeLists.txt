@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(KoraAV VERSION 0.2.1 LANGUAGES CXX)
+project(KoraAV VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -105,41 +105,42 @@ target_link_libraries(koraav_realtime
     ${CAP_LIBRARY}
 )
 
-# Main scanner CLI
+# Daemon library
+add_library(koraav_daemon STATIC
+    src/daemon/koraav_daemon.cpp
+    src/daemon/secure_ipc.cpp
+)
+
+target_link_libraries(koraav_daemon
+    koraav_realtime
+    koraav_common
+    ${CAP_LIBRARY}
+)
+
+# Unified CLI (replaces koraav, koraav-hashdb, koraav-unlock, koraav-rules)
 add_executable(koraav
-    src/cli/koraav_scanner.cpp
+    src/cli/koraav_main.cpp
 )
 
 target_link_libraries(koraav
     koraav_scanner
-)
-
-# Hash database utility
-add_executable(koraav-hashdb
-    src/cli/hashdb_tool.cpp
-)
-
-target_link_libraries(koraav-hashdb
-    koraav_scanner
-)
-
-# Unlock utility
-add_executable(koraav-unlock
-    src/cli/unlock_command.cpp
-)
-
-target_link_libraries(koraav-unlock
-    koraav_realtime
     koraav_common
 )
 
-# Rule manager utility
-add_executable(koraav-rules
-    src/cli/rule_manager.cpp
+# Daemon executable
+add_executable(korad
+    src/cli/daemon_main.cpp
+)
+
+target_link_libraries(korad
+    koraav_daemon
+    koraav_realtime
+    koraav_common
+    ${CAP_LIBRARY}
 )
 
 # Install targets
-install(TARGETS koraav koraav-hashdb koraav-unlock koraav-rules
+install(TARGETS koraav korad
     RUNTIME DESTINATION bin
 )
 
@@ -158,8 +159,7 @@ message(STATUS "libcap: Found")
 message(STATUS "YARA: ${YARA_FOUND}")
 message(STATUS "==================================")
 message(STATUS "Executables:")
-message(STATUS "  - koraav (main/scanner)")
-message(STATUS "  - koraav-hashdb (database manager)")
-message(STATUS "  - koraav-unlock (system unlock)")
+message(STATUS "  - koraav (unified CLI: scan/db/rules/unlock)")
+message(STATUS "  - korad (real-time protection daemon)")
 message(STATUS "==================================")
 

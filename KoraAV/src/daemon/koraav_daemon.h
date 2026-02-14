@@ -71,10 +71,24 @@ private:
     std::unique_ptr<realtime::RansomwareDetector> ransomware_detector_;
     std::unique_ptr<realtime::ClickFixDetector> clickfix_detector_;
     
+    // eBPF objects and programs
+    struct bpf_object* file_monitor_obj_;
+    struct bpf_object* process_monitor_obj_;
+    struct bpf_object* network_monitor_obj_;
+    
+    struct bpf_program* file_monitor_prog_;
+    struct bpf_program* process_monitor_prog_;
+    struct bpf_program* network_monitor_prog_;
+    
     // eBPF programs (file descriptors)
     int file_monitor_fd_;
     int process_monitor_fd_;
     int network_monitor_fd_;
+    
+    // eBPF links (for detaching)
+    struct bpf_link* file_monitor_link_;
+    struct bpf_link* process_monitor_link_;
+    struct bpf_link* network_monitor_link_;
     
     // Ring buffers
     void* file_events_ringbuf_;
@@ -120,3 +134,4 @@ private:
 } // namespace koraav
 
 #endif // KORAAV_DAEMON_H
+
