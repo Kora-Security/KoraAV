@@ -22,20 +22,32 @@ __ __
 [![eBPF](https://img.shields.io/badge/Powered%20by-eBPF-orange.svg)](https://ebpf.io)
 [![C++: 17](https://img.shields.io/badge/C++-17-00599C.svg)](https://isocpp.org)
 
-Peer Reviews: 0/0 • Audit Reviews: 0/0
+Peer Reviews: 0/0 | • | Audit Reviews: 0/0
 
 ⚠️ Please note that until this code/av is peer-reviewed and audited, I can't in good faith reccomend you use this product over what you'd currently use now until then. This product/project is a WIP and is not meant for serious use yet and I'll let you know when/if it gets to a point I like where I'd be okay with others using it. If you wish to ignore this note, let it be known that you are using this product with the understanding of the risks that come with using a WIP anti-virus and that you will be using a likely not very good product that could make your security worse. ⚠️
 
 </div>
 
 __ __
+
 > Peer review reports and audit review reports are WIP currently.
 
 > This README.md file is currently a WIP.
 
 <br>
 
-## 🛡️ About
+## ToDo
+
+- [ ] Fix bpf monitors code so project can compile/make/build.
+- [ ] Make progress bar look fancier and actually good looking when scanning.
+- [ ] Work on having less false positives and improve scanning detection.
+- [ ] RootKit detection.
+- [ ] An update system for when a new release is available.
+__ __
+
+<br>
+
+## About
 
 KoraAV is a modern antivirus solution designed specifically for Linux systems. Unlike traditional signature-based antivirus software, that uses **eBPF (Extended Berkeley Packet Filter)** for kernel-level monitoring and **behavioral analysis** to detect and stop threats in real-time. Even specific types of zero-day attacks that haven't been seen before.
 
@@ -52,7 +64,7 @@ __ __
 <br>
 
 
-## ✨ Features
+## Features
 
 ### On-Demand Scanning
 - **Hash-based detection** - MD5/SHA256 signatures against known malware
@@ -89,7 +101,7 @@ __ __
 
 <br>
 
-## 📋 Requirements
+## Requirements
 
 ### Minimum System Requirements
 - **Kernel:** Linux 5.15+ (eBPF CO-RE support)
@@ -105,17 +117,17 @@ __ __
 ### Supported Distributions
 | Distribution | Version | Status |
 |-------------|---------|--------|
-| Debian | 13+ (Trixie) | ✅ Fully Supported |
-| Ubuntu | 22.04+ (Jammy) | ✅ Fully Supported |
-| Arch Linux | Rolling | ✅ Fully Supported |
-| Manjaro | Current | ✅ Fully Supported |
-| Fedora | 38+ | ⚠️ Experimental |
-| Other | - | 🔧 May work with manual setup |
+| Debian | 13+ (Trixie) | Fully Supported |
+| Ubuntu | 22.04+ (Jammy) | Fully Supported |
+| Arch Linux | Rolling | UNTESTED |
+| Manjaro | Current | UNTESTED |
+| Fedora | 38+ | Experimental & UNTESTED |
+| Other | - | No Idea lol & UNTESTED |
 __ __
 
 <br>
 
-## 🚀 Installation
+## Installation
 
 Download and run the standalone installer:
 
@@ -138,7 +150,7 @@ __ __
 
 <br>
 
-## ⚡ Quick Start
+## Quick Start
 
 ```bash
 # Quick scan (common locations)
@@ -211,7 +223,7 @@ __ __
 
 <br>
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -249,7 +261,7 @@ __ __
 
 <br>
 
-## 🔧 Configuration
+## Configuration
 
 KoraAV's config file is stored at `/etc/koraav/koraav.conf`:
 
@@ -284,7 +296,7 @@ __ __
 
 <br>
 
-## 🤝 Contributing
+## Contributing
 
 I happily welcome contributions! Here's how you can help:
 
