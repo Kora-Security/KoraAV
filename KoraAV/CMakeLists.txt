@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(KoraAV VERSION 0.1.0 LANGUAGES CXX)
+project(KoraAV VERSION 0.1.0 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,6 +16,10 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
 # Output directories
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+
+# BPF output directory
+set(BPF_OUTPUT_DIR ${CMAKE_BINARY_DIR}/lib/bpf)
+file(MAKE_DIRECTORY ${BPF_OUTPUT_DIR})
 
 # Include directories
 include_directories(${CMAKE_SOURCE_DIR}/include)
@@ -60,15 +64,15 @@ add_library(koraav_scanner STATIC
     src/scanner/scanner_engine.cpp
     src/scanner/file_scanner.cpp
     src/scanner/archive_scanner.cpp
-    
+
     # Signature scanners
     src/scanner/signatures/hash_scanner.cpp
     src/scanner/signatures/yara_scanner.cpp
     src/scanner/signatures/hash_db_manager.cpp
-    
+
     # Heuristics
     src/scanner/heuristics/entropy_analyzer.cpp
-    
+
     # Static analysis
     src/scanner/static-analysis/elf_analyzer.cpp
     src/scanner/static-analysis/script_analyzer.cpp
@@ -91,11 +95,11 @@ add_library(koraav_realtime STATIC
     src/realtime-protection/behavioral-analysis/infostealer_detector.cpp
     src/realtime-protection/behavioral-analysis/ransomware_detector.cpp
     src/realtime-protection/behavioral-analysis/clickfix_detector.cpp
-    
+
     # Response
     src/realtime-protection/response/lockdown_manager.cpp
     src/realtime-protection/response/firewall_manager.cpp
-    
+
     # Daemon
     src/daemon/secure_ipc.cpp
 )
@@ -139,9 +143,27 @@ target_link_libraries(korad
     ${CAP_LIBRARY}
 )
 
+# eBPF programs compilation
+add_custom_target(bpf_programs ALL
+    COMMAND ${CMAKE_COMMAND} -E echo "Building eBPF programs..."
+    COMMAND make -C ${CMAKE_SOURCE_DIR}/bpf OUTPUT=${BPF_OUTPUT_DIR}
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/bpf
+    COMMENT "Compiling eBPF monitoring programs"
+    VERBATIM
+)
+
+# Make binaries depend on eBPF programs
+add_dependencies(korad bpf_programs)
+
 # Install targets
 install(TARGETS koraav korad
     RUNTIME DESTINATION bin
+)
+
+# Install eBPF programs
+install(DIRECTORY ${BPF_OUTPUT_DIR}/
+    DESTINATION lib/bpf
+    FILES_MATCHING PATTERN "*.bpf.o"
 )
 
 # Install data files
@@ -161,5 +183,9 @@ message(STATUS "==================================")
 message(STATUS "Executables:")
 message(STATUS "  - koraav (unified CLI: scan/db/rules/unlock)")
 message(STATUS "  - korad (real-time protection daemon)")
+message(STATUS "eBPF Programs:")
+message(STATUS "  - file_monitor.bpf.o (file access monitoring)")
+message(STATUS "  - process_monitor.bpf.o (process execution monitoring)")
+message(STATUS "  - network_monitor.bpf.o (network connection monitoring)")
 message(STATUS "==================================")
 
