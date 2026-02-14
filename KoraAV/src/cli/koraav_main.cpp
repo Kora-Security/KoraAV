@@ -1,6 +1,6 @@
 // src/cli/koraav_main.cpp
 // Unified KoraAV Command-Line Interface
-// Combines scanner, rule manager, database manager, and unlock into one binary
+// Scanner, Rule manager, Database manager, and Unlock commands.
 
 #include "../scanner/scanner_engine.h"
 #include "../scanner/signatures/hash_db_manager.h"
@@ -16,7 +16,7 @@
 using namespace koraav;
 using namespace koraav::scanner;
 
-// Progress tracking (same as koraav_scanner.cpp)
+// Progress tracking (can be better lol)
 struct ProgressTracker {
     uint64_t total_files = 0;
     uint64_t scanned_files = 0;
@@ -194,8 +194,8 @@ int main(int argc, char** argv) {
         return 0;
     }
     else if (command == "version" || command == "--version" || command == "-v") {
-        std::cout << "KoraAV v0.4.0" << std::endl;
-        std::cout << "Modern Linux Antivirus & Real-Time Protection" << std::endl;
+        std::cout << "KoraAV v0.1.0" << std::endl;
+        std::cout << "A Modern Linux Antivirus & Real-Time Protection" << std::endl;
         return 0;
     }
     else {
@@ -208,8 +208,8 @@ int main(int argc, char** argv) {
 void ShowHelp(const char* prog) {
     std::cout << R"(
 ╔════════════════════════════════════════════════════════════╗
-║                      KoraAV v0.4.0                         ║
-║          Modern Antivirus for Linux Systems                ║
+║                      KoraAV v0.1.0                         ║
+║              A Modern Antivirus for Linux                  ║
 ╚════════════════════════════════════════════════════════════╝
 
 Usage: )" << prog << R"( <command> [options]
@@ -223,7 +223,6 @@ DATABASE COMMANDS:
   db create <file>              Create new malware hash database
   db add <hash> [signature]     Add hash to database
   db remove <hash>              Remove hash from database
-  db list                       List all hashes
   db check <hash>               Check if hash exists
   
 RULE MANAGEMENT:
@@ -265,9 +264,6 @@ For more information, visit: https://github.com/Kora-Security/KoraAV
 }
 
 int HandleScan(int argc, char** argv) {
-    // Shift argv to make it look like the old koraav_scanner args
-    // argv[0] = "koraav", argv[1] = "scan"/"quick"/"full", argv[2] = ...
-    
     std::string scan_type;
     std::vector<std::string> paths;
     
@@ -280,7 +276,7 @@ int HandleScan(int argc, char** argv) {
         }
         scan_type = argv[2];
         
-        // If scan_type is not quick/full, it's a path
+        // If scan_type is not quick/full, assume it's a path
         if (scan_type != "quick" && scan_type != "full") {
             scan_type = "manual";
             for (int i = 2; i < argc; i++) {
@@ -289,7 +285,6 @@ int HandleScan(int argc, char** argv) {
         }
     }
     
-    // Create scanner
     ScannerEngine scanner;
     ScanConfig config;
     
@@ -303,17 +298,17 @@ int HandleScan(int argc, char** argv) {
     ScanResults results;
     
     if (scan_type == "quick") {
-        std::cout << "\n🔍 Starting quick scan...\n" << std::endl;
+        std::cout << "\nStarting quick scan...\n" << std::endl;
         results = scanner.QuickScan(ScanProgressCallback);
         g_progress.Finish();
     }
     else if (scan_type == "full") {
-        std::cout << "\n🔍 Starting full system scan...\n" << std::endl;
+        std::cout << "\nStarting full system scan...\n" << std::endl;
         results = scanner.FullScan(ScanProgressCallback);
         g_progress.Finish();
     }
     else if (scan_type == "manual") {
-        std::cout << "\n🔍 Starting manual scan...\n" << std::endl;
+        std::cout << "\nStarting manual scan...\n" << std::endl;
         results = scanner.ManualScan(paths, ScanProgressCallback);
         g_progress.Finish();
     }
@@ -347,11 +342,7 @@ int HandleDatabase(int argc, char** argv) {
         std::cout << "  Add hashes with: " << argv[0] << " db add <hash> [signature]" << std::endl;
         return 0;
     }
-    else if (cmd == "list") {
-        // TODO: Implement list
-        std::cout << "Database listing not yet implemented" << std::endl;
-        return 1;
-    }
+    // TODO: Add rest of DB commands. 
     else {
         std::cerr << "Unknown database command: " << cmd << std::endl;
         return 1;
@@ -405,19 +396,19 @@ int HandleUnlock(int argc, char** argv) {
     }
     
     if (option == "--filesystem") {
-        std::cout << "\n🔓 Restoring filesystem to read-write..." << std::endl;
+        std::cout << "\nRestoring filesystem to read-write..." << std::endl;
         system("mount -o remount,rw / 2>/dev/null");
         std::cout << "✓ Filesystem restored" << std::endl;
         return 0;
     }
     else if (option == "--network") {
-        std::cout << "\n🔓 Restoring network access..." << std::endl;
+        std::cout << "\nRestoring network access..." << std::endl;
         system("nft flush ruleset 2>/dev/null || iptables -F 2>/dev/null");
         std::cout << "✓ Network restored" << std::endl;
         return 0;
     }
     else if (option == "--all") {
-        std::cout << "\n🔓 FULL SYSTEM UNLOCK" << std::endl;
+        std::cout << "\nFULL SYSTEM UNLOCK" << std::endl;
         std::cout << "Restoring filesystem..." << std::endl;
         system("mount -o remount,rw / 2>/dev/null");
         std::cout << "Restoring network..." << std::endl;
