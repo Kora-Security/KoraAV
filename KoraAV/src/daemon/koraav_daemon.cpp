@@ -51,6 +51,17 @@ bool KoraAVDaemon::Initialize(const std::string& config_path) {
     }
     
     std::cout << "Initializing KoraAV Daemon..." << std::endl;
+
+    if (prctl(PR_SET_SECUREBITS,
+        SECBIT_KEEP_CAPS |
+        SECBIT_KEEP_CAPS_LOCKED |
+        SECBIT_NO_SETUID_FIXUP |
+        SECBIT_NO_SETUID_FIXUP_LOCKED |
+        SECBIT_NOROOT |
+        SECBIT_NOROOT_LOCKED) != 0) {
+        std::cerr << "Warning: Failed to set securebits: "
+        << strerror(errno) << std::endl;
+    }
     
     // Increase rlimit for BPF
     struct rlimit rlim = {RLIM_INFINITY, RLIM_INFINITY};
