@@ -21,7 +21,7 @@ void signal_handler(int signal) {
 }
 
 void show_usage(const char* prog) {
-    std::cout << "KoraAV Real-Time Protection Daemon (Korad)\n" << std::endl;
+    std::cout << "KoraAV Daemon (Korad)\n" << std::endl;
     std::cout << "Usage: " << prog << " [options]\n" << std::endl;
     std::cout << "Options:" << std::endl;
     std::cout << "  -c <config>    Configuration file (default: /etc/koraav/koraav.conf)" << std::endl;
