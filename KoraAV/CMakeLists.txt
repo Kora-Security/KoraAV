@@ -30,6 +30,17 @@ find_package(OpenSSL REQUIRED)
 find_package(CURL REQUIRED)
 find_package(PkgConfig REQUIRED)
 
+
+# Find systemd (for Type=notify support)
+pkg_check_modules(SYSTEMD libsystemd)
+if(SYSTEMD_FOUND)
+    message(STATUS "libsystemd found")
+else()
+    message(FATAL_ERROR "libsystemd not found - install libsystemd-dev for notifications")
+endif()
+
+
+
 # Find libcap (Linux capabilities)
 find_library(CAP_LIBRARY cap)
 if(NOT CAP_LIBRARY)
@@ -152,7 +163,10 @@ target_link_libraries(korad
     koraav_common
     ${CAP_LIBRARY}
     bpf  # libbpf for eBPF functionality
+    ${SYSTEMD_LIBRARIES}
 )
+
+target_include_directories(korad PRIVATE ${SYSTEMD_INCLUDE_DIRS})
 
 # eBPF programs compilation
 add_custom_target(bpf_programs ALL
