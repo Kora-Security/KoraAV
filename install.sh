@@ -566,10 +566,10 @@ InaccessiblePaths=/home /root
 
 # Temporary Files
 PrivateTmp=true
-PrivateDevices=false  # Need access to devices for monitoring
-ProtectKernelTunables=false  # Need to read /proc, /sys for monitoring
+PrivateDevices=false
+ProtectKernelTunables=false
 ProtectKernelModules=true
-ProtectKernelLogs=false  # Need to read kernel logs for monitoring
+ProtectKernelLogs=false
 ProtectClock=true
 ProtectControlGroups=true
 ProtectHostname=true
@@ -578,7 +578,7 @@ ProtectHostname=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 IPAddressDeny=any
 IPAddressAllow=localhost
-PrivateNetwork=false  # Must access network for C2 detection
+PrivateNetwork=false
 
 # System Calls (whitelist approach - only allow needed syscalls)
 SystemCallFilter=@system-service @file-system @network-io @process @signal @io-event
@@ -594,7 +594,7 @@ RemoveIPC=true
 
 # Restrict Namespaces
 RestrictNamespaces=true
-PrivateUsers=false  # Need to see all users for monitoring
+PrivateUsers=false
 
 # Logging
 StandardOutput=journal
