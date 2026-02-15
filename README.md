@@ -79,11 +79,12 @@ __ __
 - **File monitoring** - Watch file opens, reads, writes, and modifications
 - **Process monitoring** - Track process execution, forks, and termination
 - **Network monitoring** - Detect suspicious connections and data exfiltration
-- **Behavioral detection engines:**
+
+### Behavioral detection engines:
 - **Ransomware Detector** - Pre-encryption interception, mass file operation tracking
 - **InfoStealer Detector** - Monitors what's accessing browser data, credentials, cryptocurrency wallets, etc.
 - **ClickFix Detector** - Detects clipboard hijacking and social engineering attacks by looking at what you paste into terminals.
-- **C2 Detection** - Looks for and tracks a basic implementation of C2 behaviors.
+- **C2 Detector** - Looks for and monitors a basic implementation of C2 behaviors.
 
 
 ### Threat Response
