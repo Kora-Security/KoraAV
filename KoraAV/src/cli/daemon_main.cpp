@@ -26,7 +26,7 @@ void show_usage(const char* prog) {
     std::cout << "Options:" << std::endl;
     std::cout << "  -c <config>    Configuration file (default: /etc/koraav/koraav.conf)" << std::endl;
     std::cout << "  -f, --foreground    Run in foreground (don't daemonize)" << std::endl;
-    std::cout << "  -h, --help     Show this help" << std::endl;
+    std::cout << "  -h, --help     Show this help message" << std::endl;
     std::cout << "  -v, --version  Show version" << std::endl;
     std::cout << std::endl;
 }
@@ -44,7 +44,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         else if (arg == "-v" || arg == "--version") {
-            std::cout << "Korad v0.4.0" << std::endl;
+            std::cout << "Korad v0.1.0" << std::endl;
             return 0;
         }
         else if (arg == "-c" && i + 1 < argc) {
@@ -68,7 +68,7 @@ int main(int argc, char** argv) {
     }
     
     std::cout << "╔════════════════════════════════════════════════════════════╗" << std::endl;
-    std::cout << "║              Korad - Real-Time Protection v0.4.0           ║" << std::endl;
+    std::cout << "║              Korad - Real-Time Protection v0.1.0           ║" << std::endl;
     std::cout << "╚════════════════════════════════════════════════════════════╝" << std::endl;
     std::cout << std::endl;
     
