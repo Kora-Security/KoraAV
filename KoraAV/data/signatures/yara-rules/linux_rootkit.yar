@@ -1,14 +1,6 @@
 /*
    YARA Rules for Linux Rootkit Detection
    Based on real-world rootkits (2024-2026)
-   
-   Families covered:
-   - eBPF rootkits (modern kernel-level)
-   - LKM rootkits (loadable kernel modules)
-   - Diamorphine
-   - Reptile
-   - Suterusu
-   - Kovid
 */
 
 rule Linux_Rootkit_eBPF_Based
@@ -21,25 +13,21 @@ rule Linux_Rootkit_eBPF_Based
         reference = "Modern rootkits using eBPF for stealth"
         
     strings:
-        // eBPF indicators
         $ebpf1 = "bpf_probe_read"
         $ebpf2 = "bpf_override_return"
         $ebpf3 = "BPF_PROG_TYPE_KPROBE"
         $ebpf4 = "bpf_get_current_comm"
-        
-        // Hiding functionality
+
         $hide1 = "hide_pid"
         $hide2 = "hide_file"
         $hide3 = "hide_port"
         $hide4 = "hide_module"
-        
-        // Hook points
+
         $hook1 = "sys_getdents"
         $hook2 = "sys_read"
         $hook3 = "tcp4_seq_show"
         $hook4 = "proc_readdir"
-        
-        // Rootkit names
+
         $name1 = "bdoor" nocase
         $name2 = "pamspy" nocase
         $name3 = "boopkit" nocase
@@ -64,31 +52,19 @@ rule Linux_Rootkit_Diamorphine
         
     strings:
         $name = "diamorphine" nocase
-        
-        // Magic signal
         $sig1 = "kill -63"
         $sig2 = "SIGISR"
-        
-        // Hiding
         $hide1 = "module_hide"
         $hide2 = "module_show"
         $hide3 = "is_invisible"
-        
-        // Hooks
         $hook1 = "getdents"
         $hook2 = "getdents64"
         $hook3 = "sys_call_table"
-        
-        // Strings
         $str1 = "/proc/modules"
         $str2 = "/sys/module"
         
     condition:
-        (
-            $name or
-            (any of ($sig*) and any of ($hide*)) or
-            (2 of ($hook*) and any of ($str*))
-        )
+        ($name) or ((any of ($sig*) and any of ($hide*)) or (2 of ($hook*) and any of ($str*)))
 }
 
 rule Linux_Rootkit_Reptile
@@ -102,27 +78,17 @@ rule Linux_Rootkit_Reptile
         
     strings:
         $name = "reptile" nocase
-        
-        // Magic packets
         $magic1 = "MAGIC_PACKET"
         $magic2 = "SHELL_PACKET"
-        
-        // Reverse shell
         $shell1 = "reverse_shell"
         $shell2 = "connect_shell"
-        
-        // Hiding
         $hide1 = "hide_proc"
         $hide2 = "hide_tcp"
         $hide3 = "hide_udp"
-        
-        // Config
         $cfg = "/reptile"
         
     condition:
-        $name or
-        (any of ($magic*) and any of ($shell*)) or
-        (2 of ($hide*) and $cfg)
+        $name or ((any of ($magic*) and any of ($shell*)) or (2 of ($hide*) and $cfg))
 }
 
 rule Linux_Rootkit_Suterusu
@@ -135,10 +101,8 @@ rule Linux_Rootkit_Suterusu
         
     strings:
         $name = "suterusu" nocase
-        
         $hide1 = "suterusu_hide"
         $hide2 = "suterusu_unhide"
-        
         $hook = "sys_call_table"
         
     condition:
@@ -155,9 +119,7 @@ rule Linux_Rootkit_Kovid
         
     strings:
         $name = "kovid" nocase
-        
-        $magic = "0x4d564f4b" // "KOVM" magic value
-        
+        $magic = { 4D 56 4F 4B } // "KOVM" magic value
         $hide1 = "kovid_hide"
         $hide2 = "tty_write"
         
@@ -174,41 +136,30 @@ rule Linux_Rootkit_LKM_Generic
         severity = "high"
         
     strings:
-        // Kernel module
         $lkm1 = "init_module"
         $lkm2 = "cleanup_module"
         $lkm3 = "module_init"
         $lkm4 = "module_exit"
         $lkm5 = "MODULE_LICENSE"
-        
-        // Syscall table manipulation
         $syscall1 = "sys_call_table"
         $syscall2 = "ia32_sys_call_table"
         $syscall3 = "syscall_table"
-        
-        // Hooking
         $hook1 = "orig_getdents"
         $hook2 = "orig_read"
         $hook3 = "orig_write"
         $hook4 = "orig_open"
-        
-        // Hiding
-        $hide1 = "hide_" // Common prefix
+        $hide1 = "hide_"
         $hide2 = "unhide_"
         $hide3 = "invisible"
-        $hide4 = "magic_" // Magic values/packets
-        
-        // Process hiding
+        $hide4 = "magic_"
         $proc1 = "task_struct"
         $proc2 = "find_task_by_pid"
         $proc3 = "for_each_process"
         
     condition:
-        (
-            (2 of ($lkm*) and any of ($syscall*) and any of ($hook*)) or
-            (any of ($syscall*) and 2 of ($hide*)) or
-            (2 of ($hook*) and 2 of ($hide*))
-        )
+        ((2 of ($lkm*) and any of ($syscall*) and any of ($hook*)) or
+        (any of ($syscall*) and 2 of ($hide*)) or
+        (2 of ($hook*) and 2 of ($hide*)))
 }
 
 rule Linux_Rootkit_LD_PRELOAD
@@ -220,34 +171,25 @@ rule Linux_Rootkit_LD_PRELOAD
         severity = "high"
         
     strings:
-        // LD_PRELOAD
         $ld1 = "LD_PRELOAD"
         $ld2 = "/etc/ld.so.preload"
         $ld3 = "ld-linux"
-        
-        // Hooked functions
         $hook1 = "__libc_readdir"
         $hook2 = "__libc_readdir64"
         $hook3 = "__libc_open"
         $hook4 = "fopen"
         $hook5 = "stat"
         $hook6 = "lstat"
-        
-        // Library functions
         $lib1 = "dlsym"
         $lib2 = "RTLD_NEXT"
-        
-        // Hiding
         $hide1 = "hide_process"
         $hide2 = "hide_file"
         $hide3 = "is_invisible"
         
     condition:
-        (
-            (any of ($ld*) and 2 of ($hook*)) or
-            (2 of ($lib*) and any of ($hide*)) or
-            (3 of ($hook*) and any of ($hide*))
-        )
+        ((any of ($ld*) and 2 of ($hook*)) or
+        (2 of ($lib*) and any of ($hide*)) or
+        (3 of ($hook*) and any of ($hide*)))
 }
 
 rule Linux_Rootkit_PAM_Backdoor
@@ -259,24 +201,18 @@ rule Linux_Rootkit_PAM_Backdoor
         severity = "critical"
         
     strings:
-        // PAM functions
         $pam1 = "pam_sm_authenticate"
         $pam2 = "pam_sm_setcred"
         $pam3 = "pam_get_authtok"
-        
-        // Backdoor indicators
         $backdoor1 = "magic_password" nocase
         $backdoor2 = "backdoor_pass" nocase
-        $backdoor3 = "strcmp(password" // Direct password comparison
-        
-        // Logging
+        $backdoor3 = "strcmp(password"
         $log1 = "password_log"
-        $log2 = "/tmp/."  // Hidden log file
+        $log2 = "/tmp/."
         $log3 = "captured_passwords"
         
     condition:
-        2 of ($pam*) and
-        (any of ($backdoor*) or any of ($log*))
+        2 of ($pam*) and (any of ($backdoor*) or any of ($log*))
 }
 
 rule Linux_Rootkit_Network_Hiding
@@ -292,20 +228,15 @@ rule Linux_Rootkit_Network_Hiding
         $hide2 = "hide_udp"
         $hide3 = "hide_port"
         $hide4 = "hide_socket"
-        
         $proc1 = "/proc/net/tcp"
         $proc2 = "/proc/net/udp"
         $proc3 = "/proc/net/tcp6"
-        
         $hook1 = "tcp4_seq_show"
         $hook2 = "tcp6_seq_show"
         $hook3 = "udp4_seq_show"
         
     condition:
-        (
-            (2 of ($hide*) and any of ($proc*)) or
-            (any of ($hide*) and any of ($hook*))
-        )
+        ((2 of ($hide*) and any of ($proc*)) or (any of ($hide*) and any of ($hook*)))
 }
 
 rule Linux_Rootkit_Privilege_Escalation
@@ -317,21 +248,15 @@ rule Linux_Rootkit_Privilege_Escalation
         severity = "critical"
         
     strings:
-        // Root escalation
         $priv1 = "commit_creds"
         $priv2 = "prepare_kernel_cred"
         $priv3 = "uid = 0"
         $priv4 = "gid = 0"
-        
-        // Capability
         $cap1 = "CAP_SYS_ADMIN"
         $cap2 = "capable(CAP"
-        
-        // Process manipulation
         $proc1 = "task_struct"
         $proc2 = "cred_struct"
         
     condition:
-        (2 of ($priv*) and any of ($proc*)) or
-        (any of ($cap*) and any of ($proc*))
+        ((2 of ($priv*) and any of ($proc*)) or (any of ($cap*) and any of ($proc*)))
 }
