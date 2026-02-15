@@ -32,6 +32,28 @@ void ClickFixDetector::InitializePatterns() {
         "PowerShell dynamic code execution"
     });
     
+    // NEW: DNS-based ClickFix pattern (Microsoft Defender research, Feb 2026)
+    patterns_.push_back({
+        "ClickFix DNS Lookup Payload",
+        std::regex(R"(nslookup.*\|.*findstr.*Name:.*for\s+/f)", std::regex::icase),
+        95,
+        "DNS TXT record payload delivery (ClickFix variant)"
+    });
+    
+    patterns_.push_back({
+        "DNS TXT Record Parse and Execute",
+        std::regex(R"(nslookup.*\d+\.\d+\.\d+\.\d+.*findstr)", std::regex::icase),
+        90,
+        "DNS lookup with parsing (potential payload delivery)"
+    });
+    
+    patterns_.push_back({
+        "For Loop Token Parsing",
+        std::regex(R"(for\s+/f.*tokens.*delims.*in.*do.*@?echo)", std::regex::icase),
+        70,
+        "Command output parsing with for loop (common in ClickFix)"
+    });
+    
     // Bash download and execute
     patterns_.push_back({
         "Curl Pipe Bash",

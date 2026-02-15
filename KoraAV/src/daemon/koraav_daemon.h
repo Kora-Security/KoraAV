@@ -5,10 +5,22 @@
 #include "../realtime-protection/behavioral-analysis/infostealer_detector.h"
 #include "../realtime-protection/behavioral-analysis/ransomware_detector.h"
 #include "../realtime-protection/behavioral-analysis/clickfix_detector.h"
+#include "../realtime-protection/behavioral-analysis/c2_detector.h"
+#include "../common/quarantine_manager.h"
+#include "../common/notification_manager.h"
 #include <memory>
 #include <atomic>
 #include <thread>
 #include <string>
+
+
+// Forward declarations for libbpf types
+struct bpf_object;
+struct bpf_program;
+struct bpf_link;
+struct bpf_map;
+struct ring_buffer;
+
 
 namespace koraav {
 namespace daemon {
@@ -70,15 +82,22 @@ private:
     std::unique_ptr<realtime::InfoStealerDetector> infostealer_detector_;
     std::unique_ptr<realtime::RansomwareDetector> ransomware_detector_;
     std::unique_ptr<realtime::ClickFixDetector> clickfix_detector_;
+    std::unique_ptr<realtime::C2Detector> c2_detector_;
+    
+    // Quarantine manager
+    std::unique_ptr<QuarantineManager> quarantine_manager_;
+    
+    // Notification manager
+    std::unique_ptr<NotificationManager> notification_manager_;
     
     // eBPF objects and programs
-    struct bpf_object* file_monitor_obj_;
-    struct bpf_object* process_monitor_obj_;
-    struct bpf_object* network_monitor_obj_;
+    bpf_object* file_monitor_obj_;
+    bpf_object* process_monitor_obj_;
+    bpf_object* network_monitor_obj_;
     
-    struct bpf_program* file_monitor_prog_;
-    struct bpf_program* process_monitor_prog_;
-    struct bpf_program* network_monitor_prog_;
+    bpf_program* file_monitor_prog_;
+    bpf_program* process_monitor_prog_;
+    bpf_program* network_monitor_prog_;
     
     // eBPF programs (file descriptors)
     int file_monitor_fd_;
@@ -86,9 +105,9 @@ private:
     int network_monitor_fd_;
     
     // eBPF links (for detaching)
-    struct bpf_link* file_monitor_link_;
-    struct bpf_link* process_monitor_link_;
-    struct bpf_link* network_monitor_link_;
+    bpf_link* file_monitor_link_;
+    bpf_link* process_monitor_link_;
+    bpf_link* network_monitor_link_;
     
     // Ring buffers
     void* file_events_ringbuf_;
@@ -100,6 +119,7 @@ private:
     std::atomic<bool> initialized_;
     
     // Event processing threads
+    std::thread ransomware_thread_;  // Ransomware detector (fanotify loop)
     std::thread file_event_thread_;
     std::thread process_event_thread_;
     std::thread network_event_thread_;
@@ -134,4 +154,3 @@ private:
 } // namespace koraav
 
 #endif // KORAAV_DAEMON_H
-

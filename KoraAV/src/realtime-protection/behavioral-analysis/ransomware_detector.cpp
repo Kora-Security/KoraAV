@@ -184,6 +184,8 @@ void RansomwareDetector::Run() {
                 snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd);
                 ssize_t path_len = readlink(fd_path, path_buf, sizeof(path_buf) - 1);
                 
+                bool allow = true;  // Default: allow write
+                
                 if (path_len > 0) {
                     path_buf[path_len] = '\0';
                     
@@ -193,12 +195,13 @@ void RansomwareDetector::Run() {
                     }
                     
                     if (IsWhitelisted(pid) || IsPathWhitelisted(path_buf)) {
+                        // Whitelisted - allow immediately
                         close(fd);
                         ptr += metadata->event_len;
                         continue;
                     }
                     
-                    // Read data being written
+                    // Read data being written (before allowing it)
                     std::vector<uint8_t> data(4096);
                     lseek(fd, 0, SEEK_SET);
                     ssize_t bytes_read = read(fd, data.data(), data.size());
@@ -206,29 +209,37 @@ void RansomwareDetector::Run() {
                     if (bytes_read > 0) {
                         data.resize(bytes_read);
                         
-                        // Check for encryption
+                        // Check for encryption patterns
                         if (IsDataEncrypted(data)) {
                             double entropy = CalculateEntropy(data);
                             
-                            // Block the "write"
-                            ftruncate(fd, 0);
+                            // BLOCK THE WRITE - Don't allow encrypted data to be written!
+                            allow = false;
                             
                             {
                                 std::lock_guard<std::mutex> lock(stats_mutex_);
                                 stats_.encryption_attempts_blocked++;
                             }
                             
-                            // Track behavior and decide if we should kill
+                            // Track this encryption attempt
                             bool should_kill = TrackAndDecideAction(pid, path_buf);
                             
                             std::string proc_name = GetProcessName(pid);
                             
+                            std::cout << "🛡️  ENCRYPTION ATTEMPT BLOCKED!" << std::endl;
+                            std::cout << "   Process: " << proc_name << " (PID " << pid << ")" << std::endl;
+                            std::cout << "   File: " << path_buf << std::endl;
+                            std::cout << "   Entropy: " << entropy << std::endl;
+                            std::cout << "   Total attempts by this process: " 
+                                      << process_behaviors_[pid].encryption_attempts << std::endl;
+                            
                             if (should_kill) {
-                                std::cout << "CONFIRMED RANSOMWARE - KILLING PROCESS" << std::endl;
-                                std::cout << "   Process: " << proc_name << " (PID " << pid << ")" << std::endl;
-                                std::cout << "   Attempts: " << process_behaviors_[pid].encryption_attempts << std::endl;
+                                std::cout << "\n🚨 CONFIRMED RANSOMWARE - KILLING PROCESS" << std::endl;
+                                std::cout << "   Attempts blocked: " << process_behaviors_[pid].encryption_attempts << std::endl;
                                 std::cout << "   Files targeted: " << process_behaviors_[pid].files_targeted.size() << std::endl;
+                                std::cout << "   ✓ No files were encrypted (all attempts blocked!)\n" << std::endl;
                                 
+                                // Kill and quarantine
                                 QuarantineProcess(pid);
                                 kill(pid, SIGKILL);
                                 
@@ -247,7 +258,11 @@ void RansomwareDetector::Run() {
                                 LogIncident(pid, proc_name, path_buf, entropy, true, 
                                           process_behaviors_[pid].encryption_attempts);
                             } else {
-                                // Suspicious but not confirmed yet - just block this attempt
+                                // Suspicious but not confirmed yet - blocked this attempt, keep monitoring
+                                std::cout << "   ⚠️  Monitoring continues (threshold not reached)" << std::endl;
+                                std::cout << "   Threshold: " << ENCRYPTION_ATTEMPT_THRESHOLD 
+                                          << " attempts or " << RAPID_ATTEMPT_SECONDS 
+                                          << "s rapid attempts\n" << std::endl;
                                 std::cout << "BLOCKED ENCRYPTION ATTEMPT (monitoring)" << std::endl;
                                 std::cout << "   Process: " << proc_name << " (PID " << pid << ")" << std::endl;
                                 std::cout << "   File: " << path_buf << std::endl;
@@ -267,6 +282,12 @@ void RansomwareDetector::Run() {
                             }
                         }
                     }
+                    
+                    // Send fanotify response (allow or deny the write)
+                    struct fanotify_response response;
+                    response.fd = fd;
+                    response.response = allow ? FAN_ALLOW : FAN_DENY;
+                    write(fanotify_fd_, &response, sizeof(response));
                 }
                 
                 close(fd);
@@ -428,13 +449,20 @@ bool RansomwareDetector::IsDataEncrypted(const std::vector<uint8_t>& data) {
         return false;
     }
     
+    int suspicion_score = 0;  // Accumulate evidence
+    
+    // METHOD 1: Entropy analysis (most reliable)
     double entropy = CalculateEntropy(data);
     
-    if (entropy > 7.5) {
-        return true;
+    if (entropy > 7.8) {
+        suspicion_score += 50;  // Very high entropy = likely encrypted
+    } else if (entropy > 7.5) {
+        suspicion_score += 35;  // High entropy = suspicious
+    } else if (entropy > 7.0) {
+        suspicion_score += 20;  // Moderately high entropy
     }
     
-    // Chi-square test
+    // METHOD 2: Chi-square test (uniform byte distribution)
     int freq[256] = {0};
     for (uint8_t byte : data) {
         freq[byte]++;
@@ -448,8 +476,83 @@ bool RansomwareDetector::IsDataEncrypted(const std::vector<uint8_t>& data) {
         chi_square += (diff * diff) / expected;
     }
     
-    if (chi_square < 300.0 && entropy > 7.0) {
-        return true;
+    // Low chi-square = uniform distribution = likely encrypted
+    if (chi_square < 250.0) {
+        suspicion_score += 30;  // Very uniform
+    } else if (chi_square < 300.0) {
+        suspicion_score += 20;  // Somewhat uniform
+    }
+    
+    // METHOD 3: Check for encryption signature patterns
+    // Common ransomware add headers/markers
+    
+    // Check for repeated patterns at start (some ransomware markers)
+    if (data.size() >= 16) {
+        std::string header(data.begin(), data.begin() + 16);
+        if (header.find("ENCRYPTED") != std::string::npos ||
+            header.find("LOCKED") != std::string::npos ||
+            header.find("CRYPTED") != std::string::npos) {
+            suspicion_score += 100;  // Explicit ransomware marker!
+        }
+    }
+    
+    // METHOD 4: Check if data lacks normal file signatures
+    // Normal files have magic bytes (PDF, JPEG, PNG, etc.)
+    bool has_known_format = false;
+    
+    if (data.size() >= 4) {
+        // PDF
+        if (data[0] == 0x25 && data[1] == 0x50 && data[2] == 0x44 && data[3] == 0x46) {
+            has_known_format = true;
+        }
+        // JPEG
+        else if (data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF) {
+            has_known_format = true;
+        }
+        // PNG
+        else if (data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47) {
+            has_known_format = true;
+        }
+        // ZIP
+        else if (data[0] == 0x50 && data[1] == 0x4B && data[2] == 0x03 && data[3] == 0x04) {
+            has_known_format = true;
+        }
+        // DOCX/XLSX (also ZIP-based)
+        else if (data[0] == 0x50 && data[1] == 0x4B) {
+            has_known_format = true;
+        }
+        // ELF
+        else if (data[0] == 0x7F && data[1] == 0x45 && data[2] == 0x4C && data[3] == 0x46) {
+            has_known_format = true;
+        }
+    }
+    
+    // If high entropy but NO known format = suspicious
+    if (!has_known_format && entropy > 7.0) {
+        suspicion_score += 15;
+    }
+    
+    // METHOD 5: Check for low repeating sequences
+    // Encrypted data has few repeated byte sequences
+    int repeat_count = 0;
+    for (size_t i = 0; i < data.size() - 4; i++) {
+        if (data[i] == data[i+1] && data[i] == data[i+2] && data[i] == data[i+3]) {
+            repeat_count++;
+        }
+    }
+    
+    double repeat_ratio = (double)repeat_count / data.size();
+    if (repeat_ratio < 0.001 && entropy > 7.0) {
+        suspicion_score += 10;  // Very few repeats + high entropy
+    }
+    
+    // DECISION: Threshold-based on accumulated evidence
+    // Score >= 70: Definitely encrypted
+    // Score >= 50: Likely encrypted
+    // Score < 50: Probably not encrypted
+    
+    if (suspicion_score >= 50) {
+        return true;  // Block this write!
     }
     
     return false;

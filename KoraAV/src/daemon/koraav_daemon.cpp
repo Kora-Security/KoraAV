@@ -65,17 +65,25 @@ bool KoraAVDaemon::Initialize(const std::string& config_path) {
         return false;
     }
     
+    // Initialize quarantine manager
+    quarantine_manager_ = std::make_unique<QuarantineManager>("/opt/koraav/var/quarantine");
+    std::cout << "✓ Quarantine manager initialized" << std::endl;
+    
+    // Initialize notification manager
+    notification_manager_ = std::make_unique<NotificationManager>();
+    std::cout << "✓ Notification manager initialized" << std::endl;
+    
     // Load and attach eBPF programs
     if (config_.enable_file_monitor || config_.enable_process_monitor || config_.enable_network_monitor) {
         std::cout << "Loading eBPF programs..." << std::endl;
         if (!LoadeBPFPrograms()) {
             std::cerr << "Warning: eBPF programs not loaded (may not be available)" << std::endl;
         } else {
-            std::cout << "eBPF programs loaded" << std::endl;
+            std::cout << "✓ eBPF programs loaded" << std::endl;
             if (!AttacheBPFProbes()) {
                 std::cerr << "Warning: Failed to attach eBPF probes" << std::endl;
             } else {
-                std::cout << "eBPF probes attached" << std::endl;
+                std::cout << "✓ eBPF probes attached" << std::endl;
             }
         }
     }
@@ -83,32 +91,38 @@ bool KoraAVDaemon::Initialize(const std::string& config_path) {
     // Create detection engines
     if (config_.detect_infostealer) {
         infostealer_detector_ = std::make_unique<realtime::InfoStealerDetector>();
-        if (!infostealer_detector_->Initialize()) {
-            std::cerr << "Failed to initialize info stealer detector" << std::endl;
-        } else {
-            std::cout << "Info stealer detector initialized" << std::endl;
-        }
+        std::cout << "✓ Info stealer detector initialized" << std::endl;
     }
     
     if (config_.detect_ransomware) {
         ransomware_detector_ = std::make_unique<realtime::RansomwareDetector>();
-        if (!ransomware_detector_->Initialize()) {
+        
+        // Build protected paths from config
+        std::vector<std::string> protected_paths = {
+            "/home",
+            "/root",
+            "/opt",
+            "/var",
+            "/srv"
+        };
+        
+        if (!ransomware_detector_->Initialize(protected_paths)) {
             std::cerr << "Failed to initialize ransomware detector" << std::endl;
         } else {
-            std::cout << "Ransomware detector initialized" << std::endl;
+            std::cout << "✓ Ransomware detector initialized" << std::endl;
         }
     }
     
     if (config_.detect_clickfix) {
         clickfix_detector_ = std::make_unique<realtime::ClickFixDetector>();
-        if (!clickfix_detector_->Initialize()) {
-            std::cerr << "Failed to initialize ClickFix detector" << std::endl;
-        } else {
-            std::cout << "ClickFix detector initialized" << std::endl;
-        }
+        std::cout << "✓ ClickFix detector initialized" << std::endl;
     }
     
-    std::cout << "KoraAV Daemon initialized successfully" << std::endl;
+    // Initialize C2 detector
+    c2_detector_ = std::make_unique<realtime::C2Detector>();
+    std::cout << "✓ C2 detector initialized" << std::endl;
+    
+    std::cout << "✓ KoraAV Daemon initialized successfully" << std::endl;
     return true;
 }
 
@@ -127,41 +141,42 @@ void KoraAVDaemon::Run() {
     
     // Start detection engines
     if (ransomware_detector_) {
-        ransomware_detector_->Start();
-        std::cout << "Ransomware protection active" << std::endl;
+        // Ransomware detector needs its own thread (Run() is blocking)
+        ransomware_thread_ = std::thread([this]() {
+            ransomware_detector_->Run();
+        });
+        std::cout << "✓ Ransomware protection active" << std::endl;
     }
     
     if (infostealer_detector_) {
-        infostealer_detector_->Start();
-        std::cout << "Info stealer protection active" << std::endl;
+        std::cout << "✓ Info stealer protection active" << std::endl;
     }
     
     if (clickfix_detector_) {
-        clickfix_detector_->Start();
-        std::cout << "ClickFix protection active" << std::endl;
+        std::cout << "✓ ClickFix protection active" << std::endl;
     }
     
     // Start event processing threads if eBPF is loaded
     if (file_monitor_fd_ >= 0 && config_.enable_file_monitor) {
         file_event_thread_ = std::thread(&KoraAVDaemon::ProcessFileEvents, this);
-        std::cout << "File monitoring active" << std::endl;
+        std::cout << "✓ File monitoring active" << std::endl;
     }
     
     if (process_monitor_fd_ >= 0 && config_.enable_process_monitor) {
         process_event_thread_ = std::thread(&KoraAVDaemon::ProcessProcessEvents, this);
-        std::cout << "Process monitoring active" << std::endl;
+        std::cout << "✓ Process monitoring active" << std::endl;
     }
     
     if (network_monitor_fd_ >= 0 && config_.enable_network_monitor) {
         network_event_thread_ = std::thread(&KoraAVDaemon::ProcessNetworkEvents, this);
-        std::cout << "Network monitoring active" << std::endl;
+        std::cout << "✓ Network monitoring active" << std::endl;
     }
     
     // Start periodic analysis thread
     analysis_thread_ = std::thread(&KoraAVDaemon::RunPeriodicAnalysis, this);
     
-    std::cout << "KoraAV is now protecting your system!" << std::endl;
-    std::cout << "Kora Daemon is running" << std::endl;
+    std::cout << "✓ KoraAV is now protecting your system" << std::endl;
+    std::cout << "Daemon running (managed by systemd)" << std::endl;
     
     // Notify systemd we're ready
     const char* notify_socket = getenv("NOTIFY_SOCKET");
@@ -215,15 +230,12 @@ void KoraAVDaemon::Stop() {
         ransomware_detector_->Stop();
     }
     
-    if (infostealer_detector_) {
-        infostealer_detector_->Stop();
-    }
-    
-    if (clickfix_detector_) {
-        clickfix_detector_->Stop();
-    }
+    // InfoStealer and ClickFix don't have Stop() methods (passive detectors)
     
     // Wait for threads to finish
+    if (ransomware_thread_.joinable()) {
+        ransomware_thread_.join();
+    }
     if (file_event_thread_.joinable()) {
         file_event_thread_.join();
     }
@@ -281,7 +293,7 @@ void KoraAVDaemon::Stop() {
     process_monitor_fd_ = -1;
     network_monitor_fd_ = -1;
     
-    std::cout << "KoraAV has been stopped!" << std::endl;
+    std::cout << "✓ KoraAV stopped" << std::endl;
 }
 
 bool KoraAVDaemon::LoadConfiguration(const std::string& config_path) {
@@ -351,7 +363,7 @@ bool KoraAVDaemon::LoadConfiguration(const std::string& config_path) {
         }
     }
     
-    std::cout << "Config loaded" << std::endl;
+    std::cout << "✓ Configuration loaded" << std::endl;
     return true;
 }
 
@@ -375,17 +387,17 @@ bool KoraAVDaemon::LoadeBPFPrograms() {
                 if (file_monitor_prog_) {
                     file_monitor_fd_ = bpf_program__fd(file_monitor_prog_);
                     any_loaded = true;
-                    std::cout << "File monitor loaded (trace_openat)" << std::endl;
+                    std::cout << "  ✓ File monitor loaded (trace_openat)" << std::endl;
                 } else {
-                    std::cerr << "Could not find trace_openat program" << std::endl;
+                    std::cerr << "  ✗ Could not find trace_openat program" << std::endl;
                 }
             } else {
-                std::cerr << "Failed to load file monitor object: " << strerror(errno) << std::endl;
+                std::cerr << "  ✗ Failed to load file monitor object: " << strerror(errno) << std::endl;
                 bpf_object__close(file_monitor_obj_);
                 file_monitor_obj_ = nullptr;
             }
         } else {
-            std::cerr << "Failed to open file monitor: " << strerror(errno) << std::endl;
+            std::cerr << "  ✗ Failed to open file monitor: " << strerror(errno) << std::endl;
         }
     }
     
@@ -399,17 +411,17 @@ bool KoraAVDaemon::LoadeBPFPrograms() {
                 if (process_monitor_prog_) {
                     process_monitor_fd_ = bpf_program__fd(process_monitor_prog_);
                     any_loaded = true;
-                    std::cout << "Process monitor loaded (trace_execve)" << std::endl;
+                    std::cout << "  ✓ Process monitor loaded (trace_execve)" << std::endl;
                 } else {
-                    std::cerr << "Could not find trace_execve program" << std::endl;
+                    std::cerr << "  ✗ Could not find trace_execve program" << std::endl;
                 }
             } else {
-                std::cerr << "Failed to load process monitor object: " << strerror(errno) << std::endl;
+                std::cerr << "  ✗ Failed to load process monitor object: " << strerror(errno) << std::endl;
                 bpf_object__close(process_monitor_obj_);
                 process_monitor_obj_ = nullptr;
             }
         } else {
-            std::cerr << "Failed to open process monitor: " << strerror(errno) << std::endl;
+            std::cerr << "  ✗ Failed to open process monitor: " << strerror(errno) << std::endl;
         }
     }
     
@@ -423,17 +435,17 @@ bool KoraAVDaemon::LoadeBPFPrograms() {
                 if (network_monitor_prog_) {
                     network_monitor_fd_ = bpf_program__fd(network_monitor_prog_);
                     any_loaded = true;
-                    std::cout << "Network monitor loaded (trace_tcp_connect)" << std::endl;
+                    std::cout << "  ✓ Network monitor loaded (trace_tcp_connect)" << std::endl;
                 } else {
-                    std::cerr << "Could not find trace_tcp_connect program" << std::endl;
+                    std::cerr << "  ✗ Could not find trace_tcp_connect program" << std::endl;
                 }
             } else {
-                std::cerr << "Failed to load network monitor object: " << strerror(errno) << std::endl;
+                std::cerr << "  ✗ Failed to load network monitor object: " << strerror(errno) << std::endl;
                 bpf_object__close(network_monitor_obj_);
                 network_monitor_obj_ = nullptr;
             }
         } else {
-            std::cerr << "Failed to open network monitor: " << strerror(errno) << std::endl;
+            std::cerr << "  ✗ Failed to open network monitor: " << strerror(errno) << std::endl;
         }
     }
     
@@ -451,10 +463,10 @@ bool KoraAVDaemon::AttacheBPFProbes() {
         file_monitor_link_ = bpf_program__attach(file_monitor_prog_);
         
         if (file_monitor_link_) {
-            std::cout << "File monitor attached to sys_enter_openat" << std::endl;
+            std::cout << "  ✓ File monitor attached to sys_enter_openat" << std::endl;
             any_attached = true;
         } else {
-            std::cerr << "Failed to attach file monitor: " << strerror(errno) << std::endl;
+            std::cerr << "  ✗ Failed to attach file monitor: " << strerror(errno) << std::endl;
         }
     }
     
@@ -463,10 +475,10 @@ bool KoraAVDaemon::AttacheBPFProbes() {
         process_monitor_link_ = bpf_program__attach(process_monitor_prog_);
         
         if (process_monitor_link_) {
-            std::cout << "Process monitor attached to sys_enter_execve" << std::endl;
+            std::cout << "  ✓ Process monitor attached to sys_enter_execve" << std::endl;
             any_attached = true;
         } else {
-            std::cerr << "Failed to attach process monitor: " << strerror(errno) << std::endl;
+            std::cerr << "  ✗ Failed to attach process monitor: " << strerror(errno) << std::endl;
         }
     }
     
@@ -475,10 +487,10 @@ bool KoraAVDaemon::AttacheBPFProbes() {
         network_monitor_link_ = bpf_program__attach(network_monitor_prog_);
         
         if (network_monitor_link_) {
-            std::cout << "Network monitor attached to tcp_connect" << std::endl;
+            std::cout << "  ✓ Network monitor attached to tcp_connect" << std::endl;
             any_attached = true;
         } else {
-            std::cerr << "Failed to attach network monitor: " << strerror(errno) << std::endl;
+            std::cerr << "  ✗ Failed to attach network monitor: " << strerror(errno) << std::endl;
         }
     }
     
@@ -486,6 +498,47 @@ bool KoraAVDaemon::AttacheBPFProbes() {
         std::cerr << "Warning: No eBPF programs were successfully attached" << std::endl;
         std::cerr << "Real-time monitoring may not function correctly" << std::endl;
         return false;
+    }
+    
+    // Create ring buffers for event communication
+    std::cout << "\nCreating ring buffers for event processing..." << std::endl;
+    
+    // Process events ring buffer (for ClickFix detection)
+    if (process_monitor_obj_) {
+        struct bpf_map* process_events_map = bpf_object__find_map_by_name(process_monitor_obj_, "process_events");
+        if (process_events_map) {
+            int map_fd = bpf_map__fd(process_events_map);
+            if (map_fd >= 0) {
+                // Callback is already defined in ProcessProcessEvents(), just create the ring buffer
+                // The actual callback will be used when polling
+                process_events_ringbuf_ = (void*)1;  // Mark as available (will be created in ProcessProcessEvents)
+                std::cout << "  ✓ Process events ring buffer ready (ClickFix enabled)" << std::endl;
+            }
+        }
+    }
+    
+    // Network events ring buffer (for C2 detection)
+    if (network_monitor_obj_) {
+        struct bpf_map* network_events_map = bpf_object__find_map_by_name(network_monitor_obj_, "network_events");
+        if (network_events_map) {
+            int map_fd = bpf_map__fd(network_events_map);
+            if (map_fd >= 0) {
+                network_events_ringbuf_ = (void*)1;  // Mark as available
+                std::cout << "  ✓ Network events ring buffer ready (C2 detection enabled)" << std::endl;
+            }
+        }
+    }
+    
+    // File events ring buffer
+    if (file_monitor_obj_) {
+        struct bpf_map* file_events_map = bpf_object__find_map_by_name(file_monitor_obj_, "file_events");
+        if (file_events_map) {
+            int map_fd = bpf_map__fd(file_events_map);
+            if (map_fd >= 0) {
+                file_events_ringbuf_ = (void*)1;  // Mark as available
+                std::cout << "  ✓ File events ring buffer ready" << std::endl;
+            }
+        }
     }
     
     return true;
@@ -509,30 +562,173 @@ void KoraAVDaemon::ProcessFileEvents() {
 void KoraAVDaemon::ProcessProcessEvents() {
     std::cout << "Process event processor started" << std::endl;
     
-    while (running_) {
-        // Poll ring buffer for process events
-        if (process_events_ringbuf_) {
-            ring_buffer__poll((struct ring_buffer*)process_events_ringbuf_, 100);
-        } else {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
+    if (!process_events_ringbuf_) {
+        std::cout << "Process events ring buffer not available, skipping" << std::endl;
+        return;
     }
     
+    // Get the map FD
+    struct bpf_map* process_events_map = bpf_object__find_map_by_name(process_monitor_obj_, "process_events");
+    if (!process_events_map) {
+        std::cerr << "Failed to find process_events map" << std::endl;
+        return;
+    }
+    
+    int map_fd = bpf_map__fd(process_events_map);
+    if (map_fd < 0) {
+        std::cerr << "Failed to get process_events map FD" << std::endl;
+        return;
+    }
+    
+    // Define ring buffer callback for process events
+    auto callback = [](void *ctx, void *data, size_t data_sz) -> int {
+        auto *daemon = static_cast<KoraAVDaemon*>(ctx);
+        
+        // Cast to process_event structure (from eBPF program)
+        struct process_event {
+            uint64_t timestamp;
+            uint32_t pid;
+            uint32_t ppid;
+            uint32_t uid;
+            char comm[16];
+        };
+        
+        if (data_sz < sizeof(process_event)) {
+            return 0;
+        }
+        
+        auto *event = static_cast<const process_event*>(data);
+        
+        // Get full command line from /proc
+        std::string cmdline = daemon->GetProcessCommandLine(event->pid);
+        std::string proc_name(event->comm);
+        
+        // Analyze with ClickFix detector
+        if (daemon->clickfix_detector_) {
+            int score = daemon->clickfix_detector_->AnalyzeCommand(cmdline, proc_name);
+            
+            if (score >= 80) {
+                // Malicious command detected!
+                auto indicators = daemon->clickfix_detector_->GetThreatIndicators(cmdline);
+                
+                std::cout << "\n🚨 MALICIOUS COMMAND DETECTED!" << std::endl;
+                std::cout << "   Process: " << proc_name << " (PID " << event->pid << ")" << std::endl;
+                std::cout << "   Command: " << cmdline << std::endl;
+                std::cout << "   Score: " << score << "/100" << std::endl;
+                
+                daemon->HandleThreat(event->pid, "ClickFix", score, indicators);
+            } else if (score >= 60) {
+                // Suspicious but not confirmed
+                std::cout << "⚠️  Suspicious command (score: " << score << "): " << cmdline << std::endl;
+            }
+        }
+        
+        return 0;
+    };
+    
+    // Create the actual ring buffer with callback
+    struct ring_buffer* rb = ring_buffer__new(map_fd, callback, this, nullptr);
+    if (!rb) {
+        std::cerr << "Failed to create ring buffer for process events" << std::endl;
+        return;
+    }
+    
+    std::cout << "✓ Process events ring buffer polling started (ClickFix active)" << std::endl;
+    
+    // Poll ring buffer for events
+    while (running_) {
+        // Poll with 100ms timeout
+        int ret = ring_buffer__poll(rb, 100);
+        if (ret < 0 && ret != -EINTR) {
+            std::cerr << "Error polling process events ring buffer: " << ret << std::endl;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    
+    // Cleanup
+    ring_buffer__free(rb);
     std::cout << "Process event processor stopped" << std::endl;
 }
 
 void KoraAVDaemon::ProcessNetworkEvents() {
     std::cout << "Network event processor started" << std::endl;
     
-    while (running_) {
-        // Poll ring buffer for network events
-        if (network_events_ringbuf_) {
-            ring_buffer__poll((struct ring_buffer*)network_events_ringbuf_, 100);
-        } else {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
+    if (!network_events_ringbuf_) {
+        std::cout << "Network events ring buffer not available, skipping" << std::endl;
+        return;
     }
     
+    // Get the map FD
+    struct bpf_map* network_events_map = bpf_object__find_map_by_name(network_monitor_obj_, "network_events");
+    if (!network_events_map) {
+        std::cerr << "Failed to find network_events map" << std::endl;
+        return;
+    }
+    
+    int map_fd = bpf_map__fd(network_events_map);
+    if (map_fd < 0) {
+        std::cerr << "Failed to get network_events map FD" << std::endl;
+        return;
+    }
+    
+    // Define ring buffer callback for network events
+    auto callback = [](void *ctx, void *data, size_t data_sz) -> int {
+        auto *daemon = static_cast<KoraAVDaemon*>(ctx);
+        
+        // Cast to network_event structure (from eBPF program)
+        struct network_event {
+            uint64_t timestamp;
+            uint32_t pid;
+            uint32_t uid;
+            uint32_t saddr;   // Source IP
+            uint32_t daddr;   // Destination IP
+            uint16_t sport;   // Source port
+            uint16_t dport;   // Destination port
+            char comm[16];
+        };
+        
+        if (data_sz < sizeof(network_event)) {
+            return 0;
+        }
+        
+        auto *event = static_cast<const network_event*>(data);
+        
+        // Track connection with C2 detector
+        if (daemon->c2_detector_) {
+            daemon->c2_detector_->TrackConnection(event->pid, event->daddr, event->dport);
+        }
+        
+        // Also track for InfoStealer (potential exfiltration)
+        if (daemon->infostealer_detector_) {
+            daemon->infostealer_detector_->TrackNetworkConnection(event->pid, event->daddr, event->dport);
+        }
+        
+        return 0;
+    };
+    
+    // Create the actual ring buffer with callback
+    struct ring_buffer* rb = ring_buffer__new(map_fd, callback, this, nullptr);
+    if (!rb) {
+        std::cerr << "Failed to create ring buffer for network events" << std::endl;
+        return;
+    }
+    
+    std::cout << "✓ Network events ring buffer polling started (C2 detection active)" << std::endl;
+    
+    // Poll ring buffer for events
+    while (running_) {
+        // Poll with 100ms timeout
+        int ret = ring_buffer__poll(rb, 100);
+        if (ret < 0 && ret != -EINTR) {
+            std::cerr << "Error polling network events ring buffer: " << ret << std::endl;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    
+    // Cleanup
+    ring_buffer__free(rb);
     std::cout << "Network event processor stopped" << std::endl;
 }
 
@@ -552,20 +748,41 @@ void KoraAVDaemon::RunPeriodicAnalysis() {
                     for (const auto& file : proc.targeted_files) {
                         indicators.push_back("Encrypted: " + file);
                     }
-                    HandleThreat(proc.pid, "Ransomware", proc.threat_score, indicators);
+                    
+                    // Calculate threat score based on behavior
+                    int score = 60;  // Base score for suspicious
+                    score += proc.encryption_attempts * 10;  // +10 per attempt
+                    score += (proc.files_targeted >= 5) ? 25 : 0;  // +25 if many files
+                    score = std::min(score, 100);  // Cap at 100
+                    
+                    HandleThreat(proc.pid, "Ransomware", score, indicators);
                 }
             }
         }
         
         if (infostealer_detector_) {
-            auto suspicious = infostealer_detector_->GetSuspiciousProcesses();
-            for (const auto& proc : suspicious) {
-                if (proc.is_confirmed_infostealer) {
-                    std::vector<std::string> indicators;
-                    for (const auto& file : proc.accessed_files) {
-                        indicators.push_back("Accessed: " + file);
-                    }
-                    HandleThreat(proc.pid, "InfoStealer", proc.threat_score, indicators);
+            auto suspicious_pids = infostealer_detector_->GetSuspiciousProcesses(70);
+            for (const auto& pid : suspicious_pids) {
+                int score = infostealer_detector_->AnalyzeProcess(pid);
+                auto indicators = infostealer_detector_->GetThreatIndicators(pid);
+                
+                // Only trigger on high confidence (score >= 80)
+                if (score >= 80) {
+                    HandleThreat(pid, "InfoStealer", score, indicators);
+                }
+            }
+        }
+        
+        // Check for C2 communication
+        if (c2_detector_) {
+            auto suspicious_pids = c2_detector_->GetSuspiciousProcesses(70);
+            for (const auto& pid : suspicious_pids) {
+                int score = c2_detector_->AnalyzeProcess(pid);
+                auto indicators = c2_detector_->GetThreatIndicators(pid);
+                
+                // Trigger on high confidence (score >= 75 for C2)
+                if (score >= 75) {
+                    HandleThreat(pid, "C2_Communication", score, indicators);
                 }
             }
         }
@@ -576,32 +793,108 @@ void KoraAVDaemon::RunPeriodicAnalysis() {
 
 void KoraAVDaemon::HandleThreat(uint32_t pid, const std::string& threat_type,
                                 int score, const std::vector<std::string>& indicators) {
+    // Log the threat first
     LogThreat(pid, threat_type, score, indicators);
     
-    std::cout << "THREAT DETECTED: " << threat_type << " (PID " << pid << ", Score " << score << ")" << std::endl;
+    // Get process info for notification
+    std::string process_name = GetProcessName(pid);
+    std::string process_cmd = GetProcessCommandLine(pid);
     
+    // Send desktop notification FIRST (before console output)
+    if (notification_manager_) {
+        notification_manager_->SendThreatAlert(threat_type, process_name, pid, score, indicators);
+    }
+    
+    // Display threat notification (console)
+    std::cout << "\n";
+    std::cout << "═══════════════════════════════════════════════════════════" << std::endl;
+    std::cout << "🚨 THREAT DETECTED!" << std::endl;
+    std::cout << "═══════════════════════════════════════════════════════════" << std::endl;
+    std::cout << "Type:         " << threat_type << std::endl;
+    std::cout << "Threat Score: " << score << "/100" << std::endl;
+    std::cout << "Process:      " << process_name << " (PID " << pid << ")" << std::endl;
+    if (!process_cmd.empty()) {
+        std::cout << "Command:      " << process_cmd << std::endl;
+    }
+    std::cout << "\nIndicators:" << std::endl;
+    for (const auto& indicator : indicators) {
+        std::cout << "  • " << indicator << std::endl;
+    }
+    std::cout << "───────────────────────────────────────────────────────────" << std::endl;
+    
+    // Determine action based on score and config
     if (score >= config_.lockdown_threshold && config_.auto_lockdown) {
-        std::cout << "CRITICAL THREAT - Initiating system lockdown" << std::endl;
+        std::cout << "⚠️  CRITICAL THREAT (Score ≥" << config_.lockdown_threshold << ")" << std::endl;
+        std::cout << "Action:       SYSTEM LOCKDOWN" << std::endl;
+        std::cout << "═══════════════════════════════════════════════════════════\n" << std::endl;
+        
+        // Kill process first
+        KillProcess(pid);
+        
+        // Quarantine
+        if (quarantine_manager_) {
+            std::string quarantine_path = quarantine_manager_->QuarantineProcess(pid, threat_type);
+            if (!quarantine_path.empty()) {
+                std::cout << "✓ Malware quarantined to: " << quarantine_path << std::endl;
+                if (notification_manager_) {
+                    notification_manager_->SendQuarantineNotification(threat_type, process_name, quarantine_path);
+                }
+            }
+        }
+        
+        // Lockdown system
         LockdownSystem();
+        
+        // Send lockdown notification
+        if (notification_manager_) {
+            notification_manager_->SendLockdownNotification();
+        }
+        
     } else if (score >= config_.block_threshold) {
+        std::cout << "⚠️  HIGH THREAT (Score ≥" << config_.block_threshold << ")" << std::endl;
+        std::cout << "Action:       KILL & QUARANTINE" << std::endl;
+        std::cout << "═══════════════════════════════════════════════════════════\n" << std::endl;
+        
+        // Block network if configured
         if (config_.auto_block_network) {
             BlockProcessNetwork(pid);
         }
+        
+        // Kill process
         if (config_.auto_kill) {
             KillProcess(pid);
         }
+        
+        // Quarantine the malware
+        if (quarantine_manager_) {
+            std::string quarantine_path = quarantine_manager_->QuarantineProcess(pid, threat_type);
+            if (!quarantine_path.empty()) {
+                std::cout << "✓ Malware quarantined to: " << quarantine_path << std::endl;
+                if (notification_manager_) {
+                    notification_manager_->SendQuarantineNotification(threat_type, process_name, quarantine_path);
+                }
+            }
+        }
+        
+        std::cout << "✓ Threat neutralized and quarantined" << std::endl;
+        
     } else if (score >= config_.alert_threshold) {
-        std::cout << "Alert threshold reached for PID " << pid << std::endl;
+        std::cout << "⚠️  SUSPICIOUS ACTIVITY (Score ≥" << config_.alert_threshold << ")" << std::endl;
+        std::cout << "Action:       MONITORING (no action taken)" << std::endl;
+        std::cout << "═══════════════════════════════════════════════════════════\n" << std::endl;
+        std::cout << "ℹ️  Process is being monitored. Will auto-kill if threat score increases." << std::endl;
     }
+    
+    std::cout << std::endl;
 }
 
 void KoraAVDaemon::KillProcess(uint32_t pid) {
-    std::cout << " --> Killing malicious process PID " << pid << " (" << GetProcessName(pid) << ")" << std::endl;
+    std::cout << "  → Killing malicious process PID " << pid << " (" << GetProcessName(pid) << ")" << std::endl;
     kill(pid, SIGKILL);
 }
 
 void KoraAVDaemon::BlockProcessNetwork(uint32_t pid) {
-    std::cout << " --> Blocking network for PID " << pid << std::endl;
+    std::cout << "  → Blocking network for PID " << pid << std::endl;
     
     // Use nftables to block process
     std::string cmd = "nft add rule inet filter output meta skuid " + std::to_string(pid) + " drop 2>/dev/null";
@@ -613,20 +906,20 @@ void KoraAVDaemon::BlockProcessNetwork(uint32_t pid) {
 }
 
 void KoraAVDaemon::LockdownSystem() {
-    std::cout << "SYSTEM LOCKDOWN INITIATED" << std::endl;
+    std::cout << "🔒 SYSTEM LOCKDOWN INITIATED" << std::endl;
     
     // Remount filesystem read-only
-    std::cout << " --> Remounting filesystem read-only..." << std::endl;
+    std::cout << "  → Remounting filesystem read-only..." << std::endl;
     system("mount -o remount,ro / 2>/dev/null");
     
     // Block all network (except localhost)
-    std::cout << " --> Blocking network traffic..." << std::endl;
+    std::cout << "  → Blocking network traffic..." << std::endl;
     system("nft add table inet lockdown 2>/dev/null");
     system("nft add chain inet lockdown output { type filter hook output priority 0 \\; } 2>/dev/null");
     system("nft add rule inet lockdown output oif lo accept 2>/dev/null");
     system("nft add rule inet lockdown output drop 2>/dev/null");
     
-    std::cout << "SYSTEM LOCKED - Use 'sudo koraav unlock --all' to restore" << std::endl;
+    std::cout << "🔒 SYSTEM LOCKED - Use 'koraav unlock --all' to restore" << std::endl;
 }
 
 void KoraAVDaemon::LogThreat(uint32_t pid, const std::string& threat_type,

@@ -3,7 +3,7 @@
 
 # Compiler
 CLANG ?= clang
-LLVM_STRIP ?= llvm_strip
+LLVM_STRIP ?= llvm-strip
 BPFTOOL ?= bpftool
 
 # Architecture

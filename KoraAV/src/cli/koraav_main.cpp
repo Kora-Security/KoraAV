@@ -1,6 +1,6 @@
 // src/cli/koraav_main.cpp
 // Unified KoraAV Command-Line Interface
-// Scanner, Rule manager, Database manager, and Unlock commands.
+// Combines scanner, rule manager, database manager, and unlock into one binary
 
 #include "../scanner/scanner_engine.h"
 #include "../scanner/signatures/hash_db_manager.h"
@@ -195,7 +195,7 @@ int main(int argc, char** argv) {
     }
     else if (command == "version" || command == "--version" || command == "-v") {
         std::cout << "KoraAV v0.1.0" << std::endl;
-        std::cout << "A Modern Linux Antivirus & Real-Time Protection" << std::endl;
+        std::cout << "A Modern Linux Antivirus" << std::endl;
         return 0;
     }
     else {
@@ -209,7 +209,7 @@ void ShowHelp(const char* prog) {
     std::cout << R"(
 ╔════════════════════════════════════════════════════════════╗
 ║                      KoraAV v0.1.0                         ║
-║              A Modern Antivirus for Linux                  ║
+║               A Modern Antivirus for Linux                 ║
 ╚════════════════════════════════════════════════════════════╝
 
 Usage: )" << prog << R"( <command> [options]
@@ -223,6 +223,7 @@ DATABASE COMMANDS:
   db create <file>              Create new malware hash database
   db add <hash> [signature]     Add hash to database
   db remove <hash>              Remove hash from database
+  db list                       List all hashes
   db check <hash>               Check if hash exists
   
 RULE MANAGEMENT:
@@ -285,6 +286,7 @@ int HandleScan(int argc, char** argv) {
         }
     }
     
+    // Create scanner
     ScannerEngine scanner;
     ScanConfig config;
     
@@ -298,17 +300,17 @@ int HandleScan(int argc, char** argv) {
     ScanResults results;
     
     if (scan_type == "quick") {
-        std::cout << "\nStarting quick scan...\n" << std::endl;
+        std::cout << "\n🔍 Starting quick scan...\n" << std::endl;
         results = scanner.QuickScan(ScanProgressCallback);
         g_progress.Finish();
     }
     else if (scan_type == "full") {
-        std::cout << "\nStarting full system scan...\n" << std::endl;
+        std::cout << "\n🔍 Starting full system scan...\n" << std::endl;
         results = scanner.FullScan(ScanProgressCallback);
         g_progress.Finish();
     }
     else if (scan_type == "manual") {
-        std::cout << "\nStarting manual scan...\n" << std::endl;
+        std::cout << "\n🔍 Starting manual scan...\n" << std::endl;
         results = scanner.ManualScan(paths, ScanProgressCallback);
         g_progress.Finish();
     }
@@ -331,9 +333,9 @@ int HandleDatabase(int argc, char** argv) {
     
     if (cmd == "create" && argc >= 4) {
         std::string db_path = argv[3];
-        HashDBManager db_mgr(db_path);
+        HashDatabaseManager db_mgr;
         
-        if (!db_mgr.Initialize()) {
+        if (!db_mgr.CreateDatabase(db_path)) {
             std::cerr << "Failed to create database" << std::endl;
             return 1;
         }
@@ -342,7 +344,11 @@ int HandleDatabase(int argc, char** argv) {
         std::cout << "  Add hashes with: " << argv[0] << " db add <hash> [signature]" << std::endl;
         return 0;
     }
-    // TODO: Add rest of DB commands. 
+    else if (cmd == "list") {
+        // TODO: Implement list and other commands
+        std::cout << "Database listing not yet implemented" << std::endl;
+        return 1;
+    }
     else {
         std::cerr << "Unknown database command: " << cmd << std::endl;
         return 1;
@@ -396,19 +402,19 @@ int HandleUnlock(int argc, char** argv) {
     }
     
     if (option == "--filesystem") {
-        std::cout << "\nRestoring filesystem to read-write..." << std::endl;
+        std::cout << "\n🔓 Restoring filesystem to read-write..." << std::endl;
         system("mount -o remount,rw / 2>/dev/null");
         std::cout << "✓ Filesystem restored" << std::endl;
         return 0;
     }
     else if (option == "--network") {
-        std::cout << "\nRestoring network access..." << std::endl;
+        std::cout << "\n🔓 Restoring network access..." << std::endl;
         system("nft flush ruleset 2>/dev/null || iptables -F 2>/dev/null");
         std::cout << "✓ Network restored" << std::endl;
         return 0;
     }
     else if (option == "--all") {
-        std::cout << "\nFULL SYSTEM UNLOCK" << std::endl;
+        std::cout << "\n🔓 FULL SYSTEM UNLOCK" << std::endl;
         std::cout << "Restoring filesystem..." << std::endl;
         system("mount -o remount,rw / 2>/dev/null");
         std::cout << "Restoring network..." << std::endl;

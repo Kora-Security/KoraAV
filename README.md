@@ -39,7 +39,6 @@ __ __
 ## ToDo
 > Placeholders
 
-- [ ] Fix bpf monitors code so project can compile/make/build.
 - [ ] Make progress bar look fancier and actually good looking when scanning.
 - [ ] Work on having less false positives and improve scanning detection.
 - [ ] RootKit detection.

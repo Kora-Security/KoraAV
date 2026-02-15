@@ -44,7 +44,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         else if (arg == "-v" || arg == "--version") {
-            std::cout << "Korad v0.4.0" << std::endl;
+            std::cout << "Korad v0.1.0" << std::endl;
             return 0;
         }
         else if (arg == "-c" && i + 1 < argc) {

@@ -49,9 +49,11 @@ else()
     message(WARNING "YARA not found - YARA scanning will be disabled")
 endif()
 
-# Common library (capabilities, etc.)
+# Common library (capabilities, quarantine, notifications, etc.)
 add_library(koraav_common STATIC
     src/common/capabilities_manager.cpp
+    src/common/quarantine_manager.cpp
+    src/common/notification_manager.cpp
 )
 
 target_link_libraries(koraav_common
@@ -95,6 +97,10 @@ add_library(koraav_realtime STATIC
     src/realtime-protection/behavioral-analysis/infostealer_detector.cpp
     src/realtime-protection/behavioral-analysis/ransomware_detector.cpp
     src/realtime-protection/behavioral-analysis/clickfix_detector.cpp
+    src/realtime-protection/behavioral-analysis/c2_detector.cpp
+
+    # YARA real-time scanning
+    src/realtime-protection/yara-realtime/realtime_yara_scanner.cpp
 
     # Response
     src/realtime-protection/response/lockdown_manager.cpp
@@ -106,8 +112,11 @@ add_library(koraav_realtime STATIC
 
 target_link_libraries(koraav_realtime
     koraav_common
+    koraav_scanner  # Need scanner library for YaraScanner class
     ${CAP_LIBRARY}
+    ${YARA_LIBRARIES}  # Link YARA for realtime scanner
 )
+
 
 # Daemon library
 add_library(koraav_daemon STATIC
@@ -119,6 +128,7 @@ target_link_libraries(koraav_daemon
     koraav_realtime
     koraav_common
     ${CAP_LIBRARY}
+    bpf  # libbpf for eBPF functionality
 )
 
 # Unified CLI (replaces koraav, koraav-hashdb, koraav-unlock, koraav-rules)
@@ -141,6 +151,7 @@ target_link_libraries(korad
     koraav_realtime
     koraav_common
     ${CAP_LIBRARY}
+    bpf  # libbpf for eBPF functionality
 )
 
 # eBPF programs compilation
@@ -188,4 +199,3 @@ message(STATUS "  - file_monitor.bpf.o (file access monitoring)")
 message(STATUS "  - process_monitor.bpf.o (process execution monitoring)")
 message(STATUS "  - network_monitor.bpf.o (network connection monitoring)")
 message(STATUS "==================================")
-
