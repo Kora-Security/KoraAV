@@ -277,7 +277,7 @@ int HandleScan(int argc, char** argv) {
         }
         scan_type = argv[2];
         
-        // If scan_type is not quick/full, it's a path
+        // If scan_type is not quick/full, assume it's a path
         if (scan_type != "quick" && scan_type != "full") {
             scan_type = "manual";
             for (int i = 2; i < argc; i++) {
