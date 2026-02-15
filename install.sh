@@ -391,9 +391,30 @@ build_koraav() {
 
 install_files() {
     print_step "Installing KoraAV Files"
+
+    # Create dedicated user for the daemon (if doesn't exist)
+    print_info "Creating koraav system user..."
+    if ! id -u koraav >/dev/null 2>&1; then
+        useradd --system --no-create-home --shell /usr/sbin/nologin \
+                --comment "KoraAV Security Daemon" koraav
+        print_success "User 'koraav' created"
+    else
+        print_info "User 'koraav' already exists"
+    fi
+
     print_info "Creating directory structure..."
     mkdir -p "$INSTALL_DIR"/{bin,lib/bpf,etc/rules,var/{db,logs,quarantine,run},share/doc}
     mkdir -p "$CONFIG_DIR"
+    mkdir -p /var/log/koraav
+
+    # Set ownership to koraav user for data directories
+    print_info "Setting directory permissions..."
+    chown -R koraav:koraav "$INSTALL_DIR/var"
+    chown -R koraav:koraav /var/log/koraav
+    chown koraav:koraav "$CONFIG_DIR"
+    chmod 700 "$INSTALL_DIR/var/quarantine"
+    chmod 755 "$INSTALL_DIR/var/run"
+    chmod 755 /var/log/koraav
 
     print_info "Installing binaries..."
     cp "$BUILD_DIR/KoraAV/build/bin/"* "$INSTALL_DIR/bin/"
@@ -412,6 +433,8 @@ install_files() {
 
     print_info "Setting permissions..."
     chown -R root:root "$INSTALL_DIR"
+    chown -R koraav:koraav "$INSTALL_DIR/var"
+    chown -R koraav:koraav /var/log/koraav
     chmod 700 "$INSTALL_DIR/var/quarantine"
     chmod 755 "$INSTALL_DIR/var/run"
 
@@ -422,38 +445,6 @@ install_files() {
     print_success "Files installed to $INSTALL_DIR"
 }
 
-set_capabilities() {
-    print_step "Setting Linux Capabilities"
-    print_info "Setting capabilities on korad daemon..."
-    setcap \
-        cap_sys_admin,cap_net_admin,cap_kill,cap_dac_read_search,cap_sys_ptrace,cap_bpf,cap_perfmon=eip \
-        "$INSTALL_DIR/bin/korad" 2>&1 | tee -a "$LOG_FILE"
-
-    if [ $? -eq 0 ]; then
-        print_success "Capabilities set successfully"
-    else
-        print_warning "Failed to set capabilities on daemon"
-        print_warning "Trying legacy capabilities (kernel < 5.8)..."
-
-        # Fallback for older kernels without CAP_BPF/CAP_PERFMON
-        setcap \
-            cap_sys_admin,cap_net_admin,cap_kill,cap_dac_read_search,cap_sys_ptrace=eip \
-            "$INSTALL_DIR/bin/korad" 2>&1 | tee -a "$LOG_FILE"
-
-        if [ $? -eq 0 ]; then
-            print_success "Legacy capabilities set (CAP_BPF/CAP_PERFMON not available)"
-        else
-            print_error "Failed to set capabilities"
-            print_error "Daemon will require root to run"
-        fi
-    fi
-
-    # Verify capabilities
-    print_info "Verifying capabilities..."
-    getcap "$INSTALL_DIR/bin/korad"
-
-    print_success "Capabilities configured"
-}
 
 create_hash_database() {
     print_step "Creating Malware Hash Database"
@@ -535,7 +526,12 @@ create_systemd_service() {
 Description=KoraAV Security Daemon
 Documentation=https://github.com/$GITHUB_REPO
 After=network.target local-fs.target
+Before=multi-user.target
 Wants=network.target
+Requires=local-fs.target
+Conflicts=sleep.target suspend.target hibernate.target hybrid-sleep.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=notify
@@ -544,71 +540,95 @@ ExecStart=$INSTALL_DIR/bin/korad
 ExecReload=/bin/kill -HUP \$MAINPID
 Restart=on-failure
 RestartSec=5s
-TimeoutStartSec=30s
+TimeoutStartSec=60s
 TimeoutStopSec=30s
 WatchdogSec=30s
+KillMode=control-group
+KillSignal=SIGTERM
 
-# Capabilities (instead of running as root)
-# These are the ONLY privileges the daemon has
-AmbientCapabilities=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_KILL CAP_DAC_READ_SEARCH CAP_SYS_PTRACE CAP_BPF CAP_PERFMON
-CapabilityBoundingSet=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_KILL CAP_DAC_READ_SEARCH CAP_SYS_PTRACE CAP_BPF CAP_PERFMON
+# Working Directory
+WorkingDirectory=$INSTALL_DIR
 
-# Prevent Privilege Escalation
+# User & Capabilities (Non-root with explicit privileges)
+User=koraav
+Group=koraav
+AmbientCapabilities=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_KILL CAP_DAC_READ_SEARCH CAP_SYS_PTRACE CAP_BPF CAP_PERFMON CAP_SYS_RESOURCE CAP_IPC_LOCK
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_KILL CAP_DAC_READ_SEARCH CAP_SYS_PTRACE CAP_BPF CAP_PERFMON CAP_SYS_RESOURCE CAP_IPC_LOCK
 NoNewPrivileges=true
-SecureBits=keep-caps keep-caps-locked noroot noroot-locked no-setuid-fixup no-setuid-fixup-locked
+SecureBits=keep-caps no-setuid-fixup
 
-# Filesystem Isolation
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=$INSTALL_DIR/var /var/log/koraav
-ReadOnlyPaths=$INSTALL_DIR/share $INSTALL_DIR/bin $CONFIG_DIR
-InaccessiblePaths=/home /root
+# Filesystem Access (eBPF requires /sys access)
+ProtectSystem=no
+ProtectHome=no
+ReadWritePaths=$INSTALL_DIR/var /var/log/koraav /sys/fs/bpf /sys/kernel/debug
+PrivateTmp=no
+UMask=0077
 
-# Temporary Files
-PrivateTmp=true
-PrivateDevices=false
-ProtectKernelTunables=false
-ProtectKernelModules=true
-ProtectKernelLogs=false
-ProtectClock=true
-ProtectControlGroups=true
-ProtectHostname=true
+# Devices (Restrict to minimum needed)
+PrivateDevices=no
+DevicePolicy=closed
+DeviceAllow=/dev/null rw
+DeviceAllow=/dev/zero rw
+DeviceAllow=/dev/urandom r
+DeviceAllow=/dev/random r
 
-# Network
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
-IPAddressDeny=any
-IPAddressAllow=localhost
-PrivateNetwork=false
+# Kernel Access (Protect where possible)
+ProtectKernelTunables=no
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
 
-# System Calls (whitelist approach - only allow needed syscalls)
-SystemCallFilter=@system-service @file-system @network-io @process @signal @io-event
-SystemCallFilter=~@privileged @resources @cpu-emulation @debug @mount @obsolete @raw-io @reboot @swap
-SystemCallErrorNumber=EPERM
+# Process Visibility (Hide other processes)
+ProtectProc=invisible
+ProcSubset=pid
+
+# Network (C2 detection needs network monitoring)
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET
+PrivateNetwork=no
+
+# System Calls - Restrict to native architecture
+SystemCallArchitectures=native
 
 # Memory Protection
-MemoryDenyWriteExecute=true
-LockPersonality=true
-RestrictRealtime=true
-RestrictSUIDSGID=true
-RemoveIPC=true
+MemoryDenyWriteExecute=no
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
 
-# Restrict Namespaces
-RestrictNamespaces=true
-PrivateUsers=false
+# Namespaces - MUST BE DISABLED for eBPF
+RestrictNamespaces=no
+PrivateUsers=no
 
 # Logging
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=koraav
 SyslogLevel=info
+SyslogFacility=daemon
+LogLevelMax=info
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=1000
 
-# Resource Limits (prevent DoS)
+# Resource Limits
 LimitNOFILE=65536
-LimitNPROC=512
-TasksMax=512
+LimitNPROC=1024
+LimitMEMLOCK=infinity
+LimitCORE=0
+LimitAS=4G
+LimitDATA=2G
+LimitSTACK=8M
+LimitRTPRIO=0
+LimitNICE=0
+TasksMax=1024
 CPUQuota=80%
 MemoryMax=2G
 MemoryHigh=1.5G
+OOMScoreAdjust=-900
+
+# Environment
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
 
 [Install]
 WantedBy=multi-user.target
@@ -618,18 +638,12 @@ EOF
     systemctl daemon-reload
 
     print_success "Hardened systemd service created"
-    print_info "Security features enabled:"
-    print_info "  • Capabilities-based (no root)"
-    print_info "  • Filesystem isolation"
-    print_info "  • System call filtering"
-    print_info "  • Memory protections"
-    print_info "  • Resource limits"
 }
 
 enable_service() {
     print_info "Enabling KoraAV service..."
     systemctl enable korad.service
-    print_success "Service enabled! - (will start on boot)"
+    print_success "Service enabled (will start on boot)"
 }
 
 create_uninstaller() {
@@ -671,6 +685,13 @@ rm -f /usr/local/bin/koraav
 rm -f /usr/local/bin/korad
 rm -rf /etc/koraav
 rm -rf /opt/koraav
+rm -rf /var/log/koraav
+
+# Remove koraav user
+if id -u koraav >/dev/null 2>&1; then
+    userdel koraav 2>/dev/null || true
+    echo "✓ Removed koraav user"
+fi
 
 echo -e "${GREEN}✓ KoraAV has been removed${NC}"
 UNINSTALL_SCRIPT
@@ -698,6 +719,7 @@ print_summary() {
     echo "  Config: $CONFIG_DIR/koraav.conf"
     echo "  Commands:"
     echo "    • koraav --help"
+    echo "    • (daemon) | korad --help"
     echo ""
     echo -e "${CYAN}Quick Start:${NC}"
     echo "  Run a scan:      sudo koraav scan quick"
@@ -708,7 +730,7 @@ print_summary() {
     echo -e "${CYAN}Uninstall:${NC}"
     echo "  sudo $INSTALL_DIR/uninstall.sh"
     echo ""
-    echo "Full log: $LOG_FILE"
+    echo "Installation log: $LOG_FILE"
     echo ""
 }
 
@@ -723,13 +745,12 @@ main() {
     check_kernel_version
     check_btf_support
     check_dependencies_tools
-
+    
     get_latest_release
     download_source
     install_dependencies
     build_koraav
     install_files
-    set_capabilities
     create_hash_database
     create_config
     create_systemd_service
