@@ -256,7 +256,8 @@ install_dependencies_debian() {
         zlib1g-dev \
         libsqlite3-dev \
         libcap-dev \
-        libcap2-bin
+        libcap2-bin \
+        libnotify-bin
 
     print_info "Installing eBPF tools..."
     # Try to install bpftool from linux-tools
@@ -555,7 +556,6 @@ Group=koraav
 AmbientCapabilities=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_KILL CAP_DAC_READ_SEARCH CAP_SYS_PTRACE CAP_BPF CAP_PERFMON CAP_SYS_RESOURCE CAP_IPC_LOCK
 CapabilityBoundingSet=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_KILL CAP_DAC_READ_SEARCH CAP_SYS_PTRACE CAP_BPF CAP_PERFMON CAP_SYS_RESOURCE CAP_IPC_LOCK
 NoNewPrivileges=true
-SecureBits=keep-caps no-setuid-fixup
 
 # Filesystem Access (eBPF requires /sys access)
 ProtectSystem=no
@@ -745,7 +745,7 @@ main() {
     check_kernel_version
     check_btf_support
     check_dependencies_tools
-    
+
     get_latest_release
     download_source
     install_dependencies
