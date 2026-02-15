@@ -12,6 +12,7 @@
 #include <atomic>
 #include <thread>
 #include <string>
+#include <vector>
 
 
 // Forward declarations for libbpf types
@@ -130,10 +131,10 @@ private:
     bool LoadeBPFPrograms();
     bool AttacheBPFProbes();
     
-    // Event processing
-    void ProcessFileEvents();
-    void ProcessProcessEvents();
-    void ProcessNetworkEvents();
+    // Event processing (three separate monitoring threads)
+    void ProcessFileEvents();      // Monitors file access (InfoStealer detection)
+    void ProcessProcessEvents();   // Monitors process execution (ClickFix detection)
+    void ProcessNetworkEvents();   // Monitors network connections (C2 detection)
     void RunPeriodicAnalysis();
     
     // Threat response
@@ -145,7 +146,8 @@ private:
     void LogThreat(uint32_t pid, const std::string& threat_type, 
                    int score, const std::vector<std::string>& indicators);
     
-    // Utilities
+    // Helper functions
+    bool IsSensitiveFile(const std::string& path);
     std::string GetProcessName(uint32_t pid);
     std::string GetProcessCommandLine(uint32_t pid);
 };
