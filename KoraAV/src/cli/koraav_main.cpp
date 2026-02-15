@@ -16,7 +16,7 @@
 using namespace koraav;
 using namespace koraav::scanner;
 
-// Progress tracking (same as koraav_scanner.cpp)
+// Progress tracking (can be better lol)
 struct ProgressTracker {
     uint64_t total_files = 0;
     uint64_t scanned_files = 0;
@@ -208,8 +208,8 @@ int main(int argc, char** argv) {
 void ShowHelp(const char* prog) {
     std::cout << R"(
 ╔════════════════════════════════════════════════════════════╗
-║                      KoraAV v0.4.0                         ║
-║          Modern Antivirus for Linux Systems                ║
+║                      KoraAV v0.1.0                         ║
+║               A Modern Antivirus for Linux                 ║
 ╚════════════════════════════════════════════════════════════╝
 
 Usage: )" << prog << R"( <command> [options]
@@ -265,9 +265,6 @@ For more information, visit: https://github.com/Kora-Security/KoraAV
 }
 
 int HandleScan(int argc, char** argv) {
-    // Shift argv to make it look like the old koraav_scanner args
-    // argv[0] = "koraav", argv[1] = "scan"/"quick"/"full", argv[2] = ...
-    
     std::string scan_type;
     std::vector<std::string> paths;
     
@@ -348,7 +345,7 @@ int HandleDatabase(int argc, char** argv) {
         return 0;
     }
     else if (cmd == "list") {
-        // TODO: Implement list
+        // TODO: Implement list and other commands
         std::cout << "Database listing not yet implemented" << std::endl;
         return 1;
     }
