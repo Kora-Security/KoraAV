@@ -194,8 +194,8 @@ int main(int argc, char** argv) {
         return 0;
     }
     else if (command == "version" || command == "--version" || command == "-v") {
-        std::cout << "KoraAV v0.4.0" << std::endl;
-        std::cout << "Modern Linux Antivirus & Real-Time Protection" << std::endl;
+        std::cout << "KoraAV v0.1.0" << std::endl;
+        std::cout << "A Modern Linux Antivirus" << std::endl;
         return 0;
     }
     else {
