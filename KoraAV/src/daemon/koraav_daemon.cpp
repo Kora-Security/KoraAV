@@ -16,6 +16,8 @@
 #include <fcntl.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
+#include <sys/prctl.h>
+#include <linux/securebits.h>
 
 namespace koraav {
 namespace daemon {
