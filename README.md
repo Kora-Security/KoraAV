@@ -39,6 +39,7 @@ __ __
 ## ToDo
 > Placeholders
 
+- [ ] Fix systemd service file parsing errors.
 - [ ] Make progress bar look fancier and actually good looking when scanning.
 - [ ] Work on having less false positives and improve scanning detection.
 - [ ] RootKit detection.
