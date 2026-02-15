@@ -83,6 +83,7 @@ __ __
 - **Ransomware Detector** - Pre-encryption interception, mass file operation tracking
 - **InfoStealer Detector** - Monitors what's accessing browser data, credentials, cryptocurrency wallets, etc.
 - **ClickFix Detector** - Detects clipboard hijacking and social engineering attacks by looking at what you paste into terminals.
+- **C2 Detection** - Looks for and tracks a basic implementation of C2 behaviors.
 
 
 ### Threat Response
