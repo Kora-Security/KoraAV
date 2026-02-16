@@ -602,8 +602,8 @@ ProtectControlGroups=yes
 ProtectHostname=yes
 
 # Process Visibility (Hide other processes)
-ProtectProc=invisible
-ProcSubset=pid
+ProtectProc=default
+ProcSubset=all
 
 # Network (C2 detection needs network monitoring)
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET
