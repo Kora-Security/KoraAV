@@ -39,7 +39,7 @@ __ __
 ## ToDo
 > Placeholders
 
-- [ ] Fix systemd service file parsing errors.
+- [ ] Optimize and make faster when scanning.
 - [ ] Make progress bar look fancier and actually good looking when scanning.
 - [ ] Work on having less false positives and improve scanning detection.
 - [ ] RootKit detection.
@@ -121,7 +121,7 @@ __ __
 | Distribution | Version | Status |
 |-------------|---------|--------|
 | Debian | 13+ (Trixie) | Fully Supported |
-| Ubuntu | 22.04+ (Jammy) | Fully Supported |
+| Ubuntu | 22.04+ (Jammy) | UNTESTED |
 | Arch Linux | Rolling | UNTESTED |
 | Manjaro | Current | UNTESTED |
 | Fedora | 38+ | Experimental & UNTESTED |
