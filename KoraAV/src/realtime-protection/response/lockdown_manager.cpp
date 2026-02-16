@@ -175,11 +175,9 @@ LockdownManager::LockdownStatus LockdownManager::GetStatus() const {
     return status;
 }
 
-bool LockdownManager::EmergencyUnlock(const std::string& /* admin_password */) {
-    // Note: admin_password parameter reserved for future authentication mechanism
-    // Currently using capabilities-based authentication instead
+bool LockdownManager::EmergencyUnlock(const std::string&) {
     
-    // Check for required capabilities instead of password
+    // Check for required capabilities
     if (!caps_manager_->HasCapability("CAP_SYS_ADMIN") || 
         !caps_manager_->HasCapability("CAP_NET_ADMIN")) {
         std::cerr << "ERROR: Emergency unlock requires CAP_SYS_ADMIN and CAP_NET_ADMIN" << std::endl;
