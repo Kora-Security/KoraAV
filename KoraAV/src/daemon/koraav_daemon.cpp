@@ -23,7 +23,7 @@ namespace koraav {
 namespace daemon {
 
 
-static bool KoraAVDaemon::SetSecureBits() {
+bool KoraAVDaemon::SetSecureBits() {
     // Set securebits AFTER systemd has done capability transition
     int securebits = SECBIT_KEEP_CAPS |
                      SECBIT_KEEP_CAPS_LOCKED |
