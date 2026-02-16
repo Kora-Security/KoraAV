@@ -1,3 +1,6 @@
 //placeholder-text\\
 (This file is for github, so it knows to keep /data/signatures/yara-rules as a path)
 (This file can be deleted if you want)
+
+[/data/signatures/yara-rules are for koraAV default .yar files that I would pre package to go along with KoraAV by default.]
+[You can add your own rules later if you wish]
