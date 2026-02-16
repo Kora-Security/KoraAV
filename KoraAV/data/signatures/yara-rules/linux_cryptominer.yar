@@ -125,7 +125,6 @@ rule Linux_Miner_TeamTNT
         $mine2 = "pool.minexmr.com"
         
         // C2
-        $c2 = /http:\/\/[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\/[a-z]+\.sh/
         
     condition:
         uint32(0) == 0x464c457f and
@@ -150,7 +149,6 @@ rule Linux_Miner_Kinsing
         
         // Rootkit component
         $rootkit1 = "libprocesshider.so"
-        $rootkit2 = "LD_PRELOAD=/usr/local/lib/libprocesshider.so"
         
         // Persistence
         $persist1 = "masscan"
@@ -259,7 +257,6 @@ rule Linux_Miner_Resource_Consumption
         $cpu4 = "sched_setaffinity"
         
         // Process names
-        $proc1 = /[a-z]{8,12}d/ // Generic daemon names
         $proc2 = "kworker"
         $proc3 = "kthreadd"
         
