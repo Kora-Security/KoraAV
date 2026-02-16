@@ -152,9 +152,6 @@ rule Linux_Rootkit_LKM_Generic
     $hide2 = "unhide_"
     $hide3 = "invisible"
     $hide4 = "magic_"
-    $proc1 = "task_struct"
-    $proc2 = "find_task_by_pid"
-    $proc3 = "for_each_process"
 
     condition:
     ((2 of ($lkm*) and any of ($syscall*) and any of ($hook*)) or
