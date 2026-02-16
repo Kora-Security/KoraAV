@@ -16,7 +16,7 @@
 using namespace koraav;
 using namespace koraav::scanner;
 
-// Progress tracking (can be better lol)
+// Progress tracking (could be better looking lol)
 struct ProgressTracker {
     uint64_t total_files = 0;
     uint64_t scanned_files = 0;
@@ -209,7 +209,7 @@ void ShowHelp(const char* prog) {
     std::cout << R"(
 ╔════════════════════════════════════════════════════════════╗
 ║                      KoraAV v0.1.0                         ║
-║               A Modern Antivirus for Linux                 ║
+║           A Modern Antivirus for Linux Systems             ║
 ╚════════════════════════════════════════════════════════════╝
 
 Usage: )" << prog << R"( <command> [options]

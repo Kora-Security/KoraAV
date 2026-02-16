@@ -5,6 +5,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -pthread")
 
+# Build type
+# if(NOT CMAKE_BUILD_TYPE)
+#     set(CMAKE_BUILD_TYPE Release)
+# endif()
+
 set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 
 set(CMAKE_CXX_FLAGS_DEBUG "-g -O0")
@@ -57,18 +62,26 @@ else()
     message(WARNING "YARA not found - YARA scanning will be disabled")
 endif()
 
-# Common library (capabilities, quarantine, notifications, etc.)
+# Common library (capabilities, quarantine, notifications, YARA manager, etc.)
+# NOTE: YaraManager is now in common library - it's a singleton shared by all scanners
 add_library(koraav_common STATIC
     src/common/capabilities_manager.cpp
     src/common/quarantine_manager.cpp
     src/common/notification_manager.cpp
+    src/common/yara_manager.cpp          # Centralized YARA rules manager
 )
 
 target_link_libraries(koraav_common
     ${CAP_LIBRARY}
 )
 
+# Link YARA to common library (since yara_manager lives here now)
+if(YARA_FOUND)
+    target_link_libraries(koraav_common ${YARA_LIBRARIES})
+endif()
+
 # Scanner library
+# NOTE: yara_scanner.cpp is now just a wrapper around YaraManager
 add_library(koraav_scanner STATIC
     # Main scanner files
     src/scanner/scanner_engine.cpp
@@ -77,7 +90,7 @@ add_library(koraav_scanner STATIC
 
     # Signature scanners
     src/scanner/signatures/hash_scanner.cpp
-    src/scanner/signatures/yara_scanner.cpp
+    src/scanner/signatures/yara_scanner.cpp      # Wrapper for YaraManager
     src/scanner/signatures/hash_db_manager.cpp
 
     # Heuristics
@@ -89,17 +102,17 @@ add_library(koraav_scanner STATIC
 )
 
 target_link_libraries(koraav_scanner
+    koraav_common  # Links YaraManager
     OpenSSL::SSL
     OpenSSL::Crypto
     CURL::libcurl
     pthread
 )
 
-if(YARA_FOUND)
-    target_link_libraries(koraav_scanner ${YARA_LIBRARIES})
-endif()
+# Note: YARA is already linked via koraav_common, no need to link again
 
 # Real-time protection library
+# NOTE: realtime_yara_scanner.cpp also uses YaraManager (no duplicate rules)
 add_library(koraav_realtime STATIC
     # Behavioral analysis
     src/realtime-protection/behavioral-analysis/infostealer_detector.cpp
@@ -107,7 +120,7 @@ add_library(koraav_realtime STATIC
     src/realtime-protection/behavioral-analysis/clickfix_detector.cpp
     src/realtime-protection/behavioral-analysis/c2_detector.cpp
 
-    # YARA real-time scanning
+    # YARA real-time scanning (uses YaraManager)
     src/realtime-protection/yara-realtime/realtime_yara_scanner.cpp
 
     # Response
@@ -119,11 +132,12 @@ add_library(koraav_realtime STATIC
 )
 
 target_link_libraries(koraav_realtime
-    koraav_common
-    koraav_scanner  # Need scanner library for YaraScanner class
+    koraav_common   # Provides YaraManager
+    koraav_scanner  # For backwards compatibility
     ${CAP_LIBRARY}
-    ${YARA_LIBRARIES}  # Link YARA for realtime scanner
 )
+
+# Note: YARA is already linked via koraav_common
 
 
 # Daemon library
@@ -188,10 +202,12 @@ install(DIRECTORY ${BPF_OUTPUT_DIR}/
     FILES_MATCHING PATTERN "*.bpf.o"
 )
 
-# Install data files
+# Install YARA rules (loaded at runtime, NOT compiled into binary)
+# Users can add custom .yar files to this directory and reload
 install(DIRECTORY data/signatures/
     DESTINATION share/koraav/signatures
     FILES_MATCHING PATTERN "*.yar"
+    PATTERN "*.yara"
 )
 
 # Print build configuration
@@ -201,6 +217,10 @@ message(STATUS "OpenSSL: ${OPENSSL_VERSION}")
 message(STATUS "CURL: Found")
 message(STATUS "libcap: Found")
 message(STATUS "YARA: ${YARA_FOUND}")
+if(YARA_FOUND)
+    message(STATUS "YARA Version: ${YARA_VERSION}")
+    message(STATUS "YARA Architecture: Centralized (YaraManager singleton)")
+endif()
 message(STATUS "==================================")
 message(STATUS "Executables:")
 message(STATUS "  - koraav (unified CLI: scan/db/rules/unlock)")
@@ -209,4 +229,8 @@ message(STATUS "eBPF Programs:")
 message(STATUS "  - file_monitor.bpf.o (file access monitoring)")
 message(STATUS "  - process_monitor.bpf.o (process execution monitoring)")
 message(STATUS "  - network_monitor.bpf.o (network connection monitoring)")
+message(STATUS "YARA Rules:")
+message(STATUS "  - Loaded at runtime from /opt/koraav/share/signatures/yara-rules/")
+message(STATUS "  - Users can add custom .yar files and reload")
+message(STATUS "  - CLI and daemon use SAME rules (YaraManager)")
 message(STATUS "==================================")

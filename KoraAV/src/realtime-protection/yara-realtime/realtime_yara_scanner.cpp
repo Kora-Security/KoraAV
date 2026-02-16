@@ -16,7 +16,6 @@ RealtimeYaraScanner::RealtimeYaraScanner()
     // Initialize statistics
     stats_.files_scanned = 0;
     stats_.malware_detected = 0;
-    stats_.false_positives = 0;
     stats_.skipped_too_large = 0;
     stats_.skipped_whitelisted = 0;
     stats_.avg_scan_time_ms = 0.0;
@@ -30,26 +29,20 @@ RealtimeYaraScanner::RealtimeYaraScanner()
     };
 }
 
-RealtimeYaraScanner::~RealtimeYaraScanner() {
-}
-
 bool RealtimeYaraScanner::Initialize(const std::string& rules_dir) {
     std::cout << "Initializing real-time YARA scanner..." << std::endl;
     
-    // Initialize main scanner with all rules
-    yara_scanner_ = std::make_unique<scanner::YaraScanner>();
-    if (!yara_scanner_->LoadRules(rules_dir)) {
+    // Just ensure YaraManager is initialized and loaded
+    // We don't create our own scanner anymore!
+    YaraManager::Instance().Initialize();
+    bool success = YaraManager::Instance().LoadRules(rules_dir);
+    
+    if (!success) {
         std::cerr << "Failed to load YARA rules from " << rules_dir << std::endl;
         return false;
     }
     
-    // TODO: Initialize a quick scanner with a subset of critical yara rules
-    // For now, use same yara scanner
-    quick_scanner_ = std::make_unique<scanner::YaraScanner>();
-    quick_scanner_->LoadRules(rules_dir);
-    
-    std::cout << "Real-time YARA scanner initialized" << std::endl;
-    
+    std::cout << "Real-time YARA scanner ready" << std::endl;
     return true;
 }
 
@@ -59,34 +52,27 @@ bool RealtimeYaraScanner::ScanFile(const std::string& path, std::vector<std::str
     try {
         file_size = fs::file_size(path);
     } catch (...) {
-        return true;  // Can't read size, allow
+        return true;  // Can't get size, assume safe
     }
     
     if (!ShouldScan(path, file_size)) {
-        return true;  // Skip scanning, assume clean
+        return true;  // Skipped, assume safe
     }
     
-    // Measure scan time
-    auto start = std::chrono::high_resolution_clock::now();
+    // Time the scan
+    auto start = std::chrono::steady_clock::now();
     
-    // Perform YARA scan
-    matches = yara_scanner_->ScanFile(path);
+    // Scan using centralized YaraManager
+    matches = YaraManager::Instance().ScanFile(path);
     
-    auto end = std::chrono::high_resolution_clock::now();
+    auto end = std::chrono::steady_clock::now();
     double scan_time_ms = std::chrono::duration<double, std::milli>(end - start).count();
     
     // Update statistics
     bool malware_found = !matches.empty();
     UpdateStatistics(scan_time_ms, malware_found);
     
-    if (malware_found) {
-        std::cout << "YARA DETECTION in " << path << std::endl;
-        for (const auto& rule : matches) {
-            std::cout << "   • " << rule << std::endl;
-        }
-    }
-    
-    return !malware_found;  // true = clean, false = malicious
+    return matches.empty();  // true if clean
 }
 
 bool RealtimeYaraScanner::ScanData(const std::vector<char>& data, std::vector<std::string>& matches) {
@@ -94,56 +80,47 @@ bool RealtimeYaraScanner::ScanData(const std::vector<char>& data, std::vector<st
         return true;
     }
     
-    // Measure scan time
-    auto start = std::chrono::high_resolution_clock::now();
+    // Check size
+    if (data.size() > max_file_size_) {
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        stats_.skipped_too_large++;
+        return true;  // Skip, assume safe
+    }
     
-    // Perform YARA scan on memory
-    matches = yara_scanner_->ScanData(data);
+    // Time the scan
+    auto start = std::chrono::steady_clock::now();
     
-    auto end = std::chrono::high_resolution_clock::now();
+    // Scan using centralized YaraManager
+    matches = YaraManager::Instance().ScanMemory(data.data(), data.size());
+    
+    auto end = std::chrono::steady_clock::now();
     double scan_time_ms = std::chrono::duration<double, std::milli>(end - start).count();
     
     // Update statistics
     bool malware_found = !matches.empty();
     UpdateStatistics(scan_time_ms, malware_found);
     
-    return !malware_found;
+    return matches.empty();  // true if clean
 }
 
 bool RealtimeYaraScanner::QuickScan(const std::string& path, std::vector<std::string>& matches) {
-    // TODO: Use quick scanner mentioned above with critical rules only
-    // For now, we'll just use a timeout on our regular scanner
-    
-    auto start = std::chrono::high_resolution_clock::now();
-    
-    matches = quick_scanner_->ScanFile(path);
-    
-    auto end = std::chrono::high_resolution_clock::now();
-    double scan_time_ms = std::chrono::duration<double, std::milli>(end - start).count();
-    
-    bool malware_found = !matches.empty();
-    UpdateStatistics(scan_time_ms, malware_found);
-    
-    return !malware_found;
+    // QuickScan now just calls regular scan
+    // In the future, we could implement a subset of rules for speed
+    return ScanFile(path, matches);
 }
 
 bool RealtimeYaraScanner::ShouldScan(const std::string& path, size_t file_size) {
-    // Skip if too large
+    // Check file size
     if (file_size > max_file_size_) {
         std::lock_guard<std::mutex> lock(stats_mutex_);
         stats_.skipped_too_large++;
         return false;
     }
     
-    // Skip if whitelisted extension
+    // Check whitelist
     if (IsWhitelistedExtension(path)) {
         std::lock_guard<std::mutex> lock(stats_mutex_);
         stats_.skipped_whitelisted++;
-        return false;
-    }
-    
-    // Skip empty files
-    if (file_size == 0) {
         return false;
     }
     
@@ -152,7 +129,6 @@ bool RealtimeYaraScanner::ShouldScan(const std::string& path, size_t file_size) 
 
 void RealtimeYaraScanner::WhitelistExtension(const std::string& ext) {
     whitelisted_extensions_.insert(ext);
-    std::cout << "Whitelisted extension: " << ext << std::endl;
 }
 
 RealtimeYaraScanner::Statistics RealtimeYaraScanner::GetStatistics() const {
@@ -164,10 +140,10 @@ bool RealtimeYaraScanner::IsWhitelistedExtension(const std::string& path) {
     fs::path p(path);
     std::string ext = p.extension().string();
     
-    // Convert to lowercase
+    // Make lowercase for case-insensitive matching
     std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
     
-    return whitelisted_extensions_.find(ext) != whitelisted_extensions_.end();
+    return whitelisted_extensions_.count(ext) > 0;
 }
 
 void RealtimeYaraScanner::UpdateStatistics(double scan_time_ms, bool malware_found) {
@@ -184,8 +160,7 @@ void RealtimeYaraScanner::UpdateStatistics(double scan_time_ms, bool malware_fou
         stats_.avg_scan_time_ms = scan_time_ms;
     } else {
         stats_.avg_scan_time_ms = 
-            (stats_.avg_scan_time_ms * (stats_.files_scanned - 1) + scan_time_ms) / 
-            stats_.files_scanned;
+            (stats_.avg_scan_time_ms * (stats_.files_scanned - 1) + scan_time_ms) / stats_.files_scanned;
     }
 }
 
