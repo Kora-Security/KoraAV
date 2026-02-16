@@ -281,7 +281,6 @@ rule APT_Chinese_APT_Webshell
         
     strings:
         // Chinese comments (common in Chinese APT webshells)
-        $cn1 = /[\x{4e00}-\x{9fff}]/ // Chinese characters
         
         // Common webshell functions
         $ws1 = "eval("
@@ -299,7 +298,7 @@ rule APT_Chinese_APT_Webshell
         
     condition:
         (
-            ($cn1 and 2 of ($ws*)) or
+            
             (2 of ($obf*) and any of ($ws*))
         )
 }
