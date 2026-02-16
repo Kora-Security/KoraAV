@@ -16,7 +16,7 @@
 using namespace koraav;
 using namespace koraav::scanner;
 
-// Progress tracking (same as koraav_scanner.cpp)
+// Progress tracking (could be better looking lol)
 struct ProgressTracker {
     uint64_t total_files = 0;
     uint64_t scanned_files = 0;
@@ -194,8 +194,8 @@ int main(int argc, char** argv) {
         return 0;
     }
     else if (command == "version" || command == "--version" || command == "-v") {
-        std::cout << "KoraAV v0.4.0" << std::endl;
-        std::cout << "Modern Linux Antivirus & Real-Time Protection" << std::endl;
+        std::cout << "KoraAV v0.1.0" << std::endl;
+        std::cout << "A Modern Linux Antivirus" << std::endl;
         return 0;
     }
     else {
@@ -208,8 +208,8 @@ int main(int argc, char** argv) {
 void ShowHelp(const char* prog) {
     std::cout << R"(
 ╔════════════════════════════════════════════════════════════╗
-║                      KoraAV v0.4.0                         ║
-║          Modern Antivirus for Linux Systems                ║
+║                      KoraAV v0.1.0                         ║
+║           A Modern Antivirus for Linux Systems             ║
 ╚════════════════════════════════════════════════════════════╝
 
 Usage: )" << prog << R"( <command> [options]
@@ -265,9 +265,6 @@ For more information, visit: https://github.com/Kora-Security/KoraAV
 }
 
 int HandleScan(int argc, char** argv) {
-    // Shift argv to make it look like the old koraav_scanner args
-    // argv[0] = "koraav", argv[1] = "scan"/"quick"/"full", argv[2] = ...
-    
     std::string scan_type;
     std::vector<std::string> paths;
     
@@ -280,7 +277,7 @@ int HandleScan(int argc, char** argv) {
         }
         scan_type = argv[2];
         
-        // If scan_type is not quick/full, it's a path
+        // If scan_type is not quick/full, assume it's a path
         if (scan_type != "quick" && scan_type != "full") {
             scan_type = "manual";
             for (int i = 2; i < argc; i++) {
@@ -348,7 +345,7 @@ int HandleDatabase(int argc, char** argv) {
         return 0;
     }
     else if (cmd == "list") {
-        // TODO: Implement list
+        // TODO: Implement list and other commands
         std::cout << "Database listing not yet implemented" << std::endl;
         return 1;
     }
