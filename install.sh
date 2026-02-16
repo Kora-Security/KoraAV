@@ -257,7 +257,8 @@ install_dependencies_debian() {
         libsqlite3-dev \
         libcap-dev \
         libcap2-bin \
-        libnotify-bin
+        libnotify-bin \
+        libsystemd-dev
 
     print_info "Installing eBPF tools..."
     # Try to install bpftool from linux-tools
