@@ -39,6 +39,7 @@ __ __
 ## ToDo
 > Placeholders
 
+- [ ] Make and add default yara files & work on yara system to handle crashing on error.
 - [ ] Optimize and make faster when scanning.
 - [ ] Make progress bar look fancier and actually good looking when scanning.
 - [ ] Work on having less false positives and improve scanning detection.
