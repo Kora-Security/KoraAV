@@ -33,7 +33,6 @@ void show_usage(const char* prog) {
 
 int main(int argc, char** argv) {
     std::string config_path = "/etc/koraav/koraav.conf";
-    bool foreground = false;
 
     // Parse arguments
     for (int i = 1; i < argc; i++) {
