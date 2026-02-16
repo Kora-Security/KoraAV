@@ -147,6 +147,7 @@ private:
                    int score, const std::vector<std::string>& indicators);
     
     // Helper functions
+    bool SetSecureBits();
     bool IsSensitiveFile(const std::string& path);
     std::string GetProcessName(uint32_t pid);
     std::string GetProcessCommandLine(uint32_t pid);
