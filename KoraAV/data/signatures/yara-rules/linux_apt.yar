@@ -298,7 +298,7 @@ rule APT_Chinese_APT_Webshell
         
     condition:
         (
-            
+            ($cn1 and 2 of ($ws*)) or
             (2 of ($obf*) and any of ($ws*))
         )
 }
