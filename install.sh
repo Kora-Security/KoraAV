@@ -426,10 +426,31 @@ install_files() {
         cp "$BUILD_DIR/KoraAV/build/lib/bpf/"*.bpf.o "$INSTALL_DIR/lib/bpf/" 2>/dev/null || true
     fi
 
-    print_info "Installing YARA rules..."
+    print_info "Installing YARA rules (runtime loaded, not compiled)..."
     if [ -d "$BUILD_DIR/KoraAV/data/signatures/yara-rules" ]; then
         mkdir -p "$INSTALL_DIR/share/signatures/yara-rules"
-        cp "$BUILD_DIR/KoraAV/data/signatures/yara-rules/"*.yar "$INSTALL_DIR/share/signatures/yara-rules/" 2>/dev/null || true
+        mkdir -p "$INSTALL_DIR/share/signatures/yara-rules/custom"  # For user-added rules
+        
+        # Copy all .yar files (recursively, to support subdirectories)
+        if ls "$BUILD_DIR/KoraAV/data/signatures/yara-rules/"*.yar >/dev/null 2>&1; then
+            cp -r "$BUILD_DIR/KoraAV/data/signatures/yara-rules/"*.yar "$INSTALL_DIR/share/signatures/yara-rules/" 2>/dev/null || true
+            print_success "YARA rules installed"
+            
+            # Count rules
+            RULE_COUNT=$(find "$INSTALL_DIR/share/signatures/yara-rules/" -name "*.yar" -o -name "*.yara" | wc -l)
+            print_info "Installed $RULE_COUNT YARA rule files"
+        else
+            print_warning "No YARA rules found in source directory"
+        fi
+        
+        # Set permissions (readable by koraav user)
+        chmod 755 "$INSTALL_DIR/share/signatures/yara-rules"
+        chmod 755 "$INSTALL_DIR/share/signatures/yara-rules/custom"
+        find "$INSTALL_DIR/share/signatures/yara-rules" -type f -name "*.yar*" -exec chmod 644 {} \;
+        
+        print_info "Users can add custom rules to: $INSTALL_DIR/share/signatures/yara-rules/custom/"
+    else
+        print_warning "YARA rules directory not found - YARA scanning will be limited"
     fi
 
     print_info "Setting permissions..."
@@ -717,6 +738,7 @@ print_summary() {
     echo "  Version: $RELEASE_TAG"
     echo "  Location: $INSTALL_DIR"
     echo "  Config: $CONFIG_DIR/koraav.conf"
+    echo "  YARA Rules: $INSTALL_DIR/share/signatures/yara-rules/"
     echo "  Commands:"
     echo "    • koraav --help"
     echo "    • (daemon) | korad --help"
@@ -726,6 +748,12 @@ print_summary() {
     echo "  Start daemon:    sudo systemctl start korad"
     echo "  View logs:       sudo journalctl -u korad -f"
     echo "  Edit config:     sudo nano $CONFIG_DIR/koraav.conf"
+    echo ""
+    echo -e "${CYAN}YARA Rules (NEW Architecture):${NC}"
+    echo "  • Rules loaded at RUNTIME (not compiled into binary)"
+    echo "  • Add custom rules: $INSTALL_DIR/share/signatures/yara-rules/custom/"
+    echo "  • Reload rules:     sudo koraav rules reload"
+    echo "  • CLI and daemon use SAME rules (no duplication)"
     echo ""
     echo -e "${CYAN}Uninstall:${NC}"
     echo "  sudo $INSTALL_DIR/uninstall.sh"
