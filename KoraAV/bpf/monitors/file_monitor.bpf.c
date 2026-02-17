@@ -67,25 +67,25 @@ static __always_inline bool is_sensitive_path(const char *path) {
             starts_with(path, "Downloads/", 10) ||
             starts_with(path, ".password-store/", 16)) {
             return true;
-            }
+        }
     }
-
+    
     // Root user sensitive files
     if (starts_with(path, "/root/.ssh/", 11) ||
         starts_with(path, "/root/.gnupg/", 13) ||
         starts_with(path, "/root/.aws/", 11)) {
         return true;
-        }
-
-        // System credentials
-        if (starts_with(path, "/etc/passwd", 11) ||
-            starts_with(path, "/etc/shadow", 11) ||
-            starts_with(path, "/etc/sudoers", 12) ||
-            starts_with(path, "/etc/ssh/", 9)) {
-            return true;
-            }
-
-            return false;
+    }
+    
+    // System credentials
+    if (starts_with(path, "/etc/passwd", 11) ||
+        starts_with(path, "/etc/shadow", 11) ||
+        starts_with(path, "/etc/sudoers", 12) ||
+        starts_with(path, "/etc/ssh/", 9)) {
+        return true;
+    }
+    
+    return false;
 }
 
 // Helper: Check if process should be ignored
@@ -100,22 +100,22 @@ static __always_inline bool should_ignore_process(const char *comm) {
         starts_with(comm, "Xorg", 4) ||
         starts_with(comm, "gnome-shell", 11)) {
         return true;
-        }
-        return false;
+    }
+    return false;
 }
 
 // Helper: Rate limit check
 static __always_inline bool check_rate_limit(__u32 pid) {
     __u64 now = bpf_ktime_get_ns();
     __u64 *last_time = bpf_map_lookup_elem(&rate_limit_map, &pid);
-
+    
     if (last_time) {
         // Only send event if enough time has passed
         if (now - *last_time < RATE_LIMIT_NS) {
             return false;  // Too soon, rate limited
         }
     }
-
+    
     // Update last event time
     bpf_map_update_elem(&rate_limit_map, &pid, &now, BPF_ANY);
     return true;
@@ -126,65 +126,65 @@ int trace_openat(struct trace_event_raw_sys_enter *ctx) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = pid_tgid >> 32;
     __u32 uid = bpf_get_current_uid_gid() & 0xFFFFFFFF;
-
+    
     // FILTER #1: Skip kernel threads (PID 0)
     if (pid == 0) {
         return 0;
     }
-
+    
     // FILTER #2: Get and check process name early
     char comm[MAX_COMM_LEN] = {};
     bpf_get_current_comm(&comm, sizeof(comm));
-
+    
     if (should_ignore_process(comm)) {
         return 0;
     }
-
+    
     // FILTER #3: Read filename and check if sensitive
     char filename[MAX_PATH_LEN] = {};
     const char *filename_ptr = (const char *)ctx->args[1];
     long ret = bpf_probe_read_user_str(filename, sizeof(filename), filename_ptr);
-
+    
     if (ret <= 0) {
         return 0;  // Failed to read filename
     }
-
+    
     // Skip empty filenames
     if (filename[0] == '\0') {
         return 0;
     }
-
+    
     // CRITICAL: Only monitor sensitive paths
     if (!is_sensitive_path(filename)) {
         return 0;
     }
-
+    
     // FILTER #4: Rate limiting per PID
     if (!check_rate_limit(pid)) {
         return 0;
     }
-
+    
     // FILTER #5: Skip if file descriptor is < 0 (error case)
     int dfd = (int)ctx->args[0];
     if (dfd < -100) {  // AT_FDCWD is -100
         return 0;
     }
-
+    
     // ✅ All filters passed - send event to userspace
     struct file_event *event = bpf_ringbuf_reserve(&file_events, sizeof(*event), 0);
     if (!event) {
         return 0;  // Ring buffer full, drop event
     }
-
+    
     event->timestamp = bpf_ktime_get_ns();
     event->pid = pid;
     event->uid = uid;
     event->flags = (int)ctx->args[2];  // open flags
     event->mode = (int)ctx->args[3];   // mode
-
+    
     __builtin_memcpy(event->comm, comm, MAX_COMM_LEN);
     __builtin_memcpy(event->filename, filename, MAX_PATH_LEN);
-
+    
     bpf_ringbuf_submit(event, 0);
     return 0;
 }
