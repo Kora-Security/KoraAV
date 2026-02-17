@@ -1,6 +1,7 @@
 // src/realtime-protection/behavioral-analysis/ransomware_detector.cpp
 #include "ransomware_detector.h"
 #include <sys/fanotify.h>
+#include <poll.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -55,10 +56,14 @@ bool RansomwareDetector::Initialize(const std::vector<std::string>& protected_pa
         std::cerr << "Warning: YARA scanning disabled (rules not found)" << std::endl;
     }
     
-    // Create fanotify instance with permission events
+    // Create fanotify instance - NOTIFICATION ONLY (not permission events).
+    // FAN_CLASS_CONTENT with FAN_OPEN_PERM requires the daemon to explicitly
+    // allow/deny every file open on the monitored mounts. If the daemon falls
+    // behind, the entire filesystem stalls and the VM freezes.
+    // FAN_CLASS_NOTIF is non-blocking: we observe and react after the fact.
     fanotify_fd_ = fanotify_init(
-        FAN_CLASS_CONTENT | FAN_UNLIMITED_QUEUE | FAN_UNLIMITED_MARKS,
-        O_RDONLY | O_LARGEFILE
+        FAN_CLASS_NOTIF | FAN_UNLIMITED_QUEUE | FAN_UNLIMITED_MARKS,
+        O_RDONLY | O_LARGEFILE | O_NONBLOCK
     );
     
     if (fanotify_fd_ < 0) {
@@ -66,12 +71,12 @@ bool RansomwareDetector::Initialize(const std::vector<std::string>& protected_pa
         return false;
     }
     
-    // Mark directories for monitoring
+    // Mark directories - MODIFY and CLOSE_WRITE only, no permission events.
     for (const auto& path : protected_paths) {
         int ret = fanotify_mark(
             fanotify_fd_,
             FAN_MARK_ADD | FAN_MARK_MOUNT,
-            FAN_OPEN_PERM | FAN_MODIFY | FAN_CLOSE_WRITE,
+            FAN_MODIFY | FAN_CLOSE_WRITE,
             AT_FDCWD,
             path.c_str()
         );
@@ -94,205 +99,120 @@ bool RansomwareDetector::Initialize(const std::vector<std::string>& protected_pa
 
 void RansomwareDetector::Run() {
     running_ = true;
-    
+
+    if (fanotify_fd_ < 0) {
+        std::cerr << "Ransomware detector: fanotify not available, exiting thread" << std::endl;
+        return;
+    }
+
     char buffer[4096];
-    
+    struct pollfd pfd = { fanotify_fd_, POLLIN, 0 };
+
     while (running_) {
+        // Use poll() with timeout so we can check running_ flag regularly.
+        // This prevents blocking forever when there are no events.
+        int ready = poll(&pfd, 1, 500);  // 500ms timeout
+        if (ready < 0) {
+            if (errno == EINTR) continue;
+            std::cerr << "Error polling fanotify: " << strerror(errno) << std::endl;
+            break;
+        }
+        if (ready == 0) continue;  // Timeout, loop back and check running_
+
         ssize_t len = read(fanotify_fd_, buffer, sizeof(buffer));
         if (len < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
+            if (errno == EINTR || errno == EAGAIN) continue;
             std::cerr << "Error reading fanotify events: " << strerror(errno) << std::endl;
             break;
         }
         
+        // Process each event in the buffer.
+        // Since we use FAN_CLASS_NOTIF (no permission events), we never
+        // send FAN_ALLOW/FAN_DENY. We just resolve the path, analyse,
+        // then close the fd to avoid fd exhaustion.
         char* ptr = buffer;
         while (ptr < buffer + len) {
-            struct fanotify_event_metadata* metadata = 
+            struct fanotify_event_metadata* metadata =
                 (struct fanotify_event_metadata*)ptr;
-            
+
             if (metadata->vers != FANOTIFY_METADATA_VERSION) {
                 std::cerr << "Fanotify metadata version mismatch" << std::endl;
                 break;
             }
-            
-            if (metadata->mask & FAN_OPEN_PERM) {
-                uint32_t pid = metadata->pid;
-                int fd = metadata->fd;
-                
-                char path_buf[PATH_MAX];
+
+            uint32_t pid = metadata->pid;
+            int fd       = metadata->fd;
+
+            // Resolve path from the event fd
+            char path_buf[PATH_MAX] = {};
+            if (fd >= 0) {
                 char fd_path[64];
                 snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd);
-                ssize_t path_len = readlink(fd_path, path_buf, sizeof(path_buf) - 1);
-                
-                if (path_len > 0) {
-                    path_buf[path_len] = '\0';
-                    
-                    bool allow = true;
-                    
-                    // YARA SCAN ON FILE EXECUTION
-                    // If file is being opened for execution, scan it with YARA
-                    if (metadata->mask & FAN_OPEN_EXEC_PERM) {
-                        if (yara_scanner_ && !IsWhitelisted(pid) && !IsPathWhitelisted(path_buf)) {
-                            std::vector<std::string> yara_matches;
-                            
-                            if (!yara_scanner_->QuickScan(path_buf, yara_matches)) {
-                                // YARA detected malware!
-                                std::cout << "YARA RULE BLOCKED MALWARE EXECUTION" << std::endl;
-                                std::cout << "   File: " << path_buf << std::endl;
-                                std::cout << "   PID: " << pid << std::endl;
-                                std::cout << "   Matches:" << std::endl;
-                                
-                                for (const auto& rule : yara_matches) {
-                                    std::cout << "      • " << rule << std::endl;
-                                }
-                                
-                                // Block, Kill, Quarantine
-                                allow = false;
-                                kill(pid, SIGKILL);
-                                QuarantineProcess(pid);
-                                
+                ssize_t plen = readlink(fd_path, path_buf, sizeof(path_buf) - 1);
+                if (plen > 0) path_buf[plen] = '\0';
+            }
+
+            if (path_buf[0] != '\0' &&
+                !IsWhitelisted(pid) &&
+                !IsPathWhitelisted(path_buf)) {
+
+                {
+                    std::lock_guard<std::mutex> lock(stats_mutex_);
+                    stats_.files_checked++;
+                }
+
+                if (metadata->mask & (FAN_MODIFY | FAN_CLOSE_WRITE)) {
+                    // Sample the file to check entropy
+                    std::vector<uint8_t> data(8192);
+                    if (fd >= 0) {
+                        lseek(fd, 0, SEEK_SET);
+                        ssize_t bytes_read = read(fd, data.data(), data.size());
+                        if (bytes_read > 0) {
+                            data.resize(bytes_read);
+
+                            if (IsDataEncrypted(data)) {
+                                double entropy = CalculateEntropy(data);
+                                bool should_kill = TrackAndDecideAction(pid, path_buf);
+                                std::string proc_name = GetProcessName(pid);
+
                                 {
                                     std::lock_guard<std::mutex> lock(stats_mutex_);
-                                    stats_.processes_killed++;
+                                    stats_.encryption_attempts_blocked++;
+                                }
+
+                                std::cout << "⚠ High-entropy write: "
+                                          << proc_name << " (PID " << pid << ") → "
+                                          << path_buf
+                                          << " entropy=" << std::fixed
+                                          << std::setprecision(2) << entropy
+                                          << std::endl;
+
+                                if (should_kill) {
+                                    std::cout << "\n🚨 RANSOMWARE CONFIRMED - killing PID " << pid << std::endl;
+                                    QuarantineProcess(pid);
+                                    kill(pid, SIGKILL);
+                                    {
+                                        std::lock_guard<std::mutex> lock(behavior_mutex_);
+                                        process_behaviors_[pid].killed = true;
+                                    }
+                                    {
+                                        std::lock_guard<std::mutex> lock(stats_mutex_);
+                                        stats_.processes_killed++;
+                                    }
+                                    LogIncident(pid, proc_name, path_buf, entropy, true,
+                                                process_behaviors_[pid].encryption_attempts);
+                                } else {
+                                    LogIncident(pid, proc_name, path_buf, entropy, false,
+                                                process_behaviors_[pid].encryption_attempts);
                                 }
                             }
                         }
                     }
-                    
-                    if (IsWhitelisted(pid) || IsPathWhitelisted(path_buf)) {
-                        std::lock_guard<std::mutex> lock(stats_mutex_);
-                        stats_.whitelisted_operations++;
-                    }
-                    
-                    struct fanotify_response response;
-                    response.fd = fd;
-                    response.response = allow ? FAN_ALLOW : FAN_DENY;
-                    
-                    write(fanotify_fd_, &response, sizeof(response));
                 }
-                
-                close(fd);
             }
-            else if (metadata->mask & FAN_MODIFY) {
-                uint32_t pid = metadata->pid;
-                int fd = metadata->fd;
-                
-                char path_buf[PATH_MAX];
-                char fd_path[64];
-                snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd);
-                ssize_t path_len = readlink(fd_path, path_buf, sizeof(path_buf) - 1);
-                
-                bool allow = true;  // Default: allow write
-                
-                if (path_len > 0) {
-                    path_buf[path_len] = '\0';
-                    
-                    {
-                        std::lock_guard<std::mutex> lock(stats_mutex_);
-                        stats_.files_checked++;
-                    }
-                    
-                    if (IsWhitelisted(pid) || IsPathWhitelisted(path_buf)) {
-                        // Whitelisted - allow immediately
-                        close(fd);
-                        ptr += metadata->event_len;
-                        continue;
-                    }
-                    
-                    // Read data being written (before allowing it)
-                    std::vector<uint8_t> data(4096);
-                    lseek(fd, 0, SEEK_SET);
-                    ssize_t bytes_read = read(fd, data.data(), data.size());
-                    
-                    if (bytes_read > 0) {
-                        data.resize(bytes_read);
-                        
-                        // Check for encryption patterns
-                        if (IsDataEncrypted(data)) {
-                            double entropy = CalculateEntropy(data);
-                            
-                            // BLOCK THE WRITE - Don't allow encrypted data to be written!
-                            allow = false;
-                            
-                            {
-                                std::lock_guard<std::mutex> lock(stats_mutex_);
-                                stats_.encryption_attempts_blocked++;
-                            }
-                            
-                            // Track this encryption attempt
-                            bool should_kill = TrackAndDecideAction(pid, path_buf);
-                            
-                            std::string proc_name = GetProcessName(pid);
-                            
-                            std::cout << "🛡️  ENCRYPTION ATTEMPT BLOCKED!" << std::endl;
-                            std::cout << "   Process: " << proc_name << " (PID " << pid << ")" << std::endl;
-                            std::cout << "   File: " << path_buf << std::endl;
-                            std::cout << "   Entropy: " << entropy << std::endl;
-                            std::cout << "   Total attempts by this process: " 
-                                      << process_behaviors_[pid].encryption_attempts << std::endl;
-                            
-                            if (should_kill) {
-                                std::cout << "\n🚨 CONFIRMED RANSOMWARE - KILLING PROCESS" << std::endl;
-                                std::cout << "   Attempts blocked: " << process_behaviors_[pid].encryption_attempts << std::endl;
-                                std::cout << "   Files targeted: " << process_behaviors_[pid].files_targeted.size() << std::endl;
-                                std::cout << "   ✓ No files were encrypted (all attempts blocked!)\n" << std::endl;
-                                
-                                // Kill and quarantine
-                                QuarantineProcess(pid);
-                                kill(pid, SIGKILL);
-                                
-                                // Mark as killed
-                                {
-                                    std::lock_guard<std::mutex> lock(behavior_mutex_);
-                                    process_behaviors_[pid].killed = true;
-                                }
-                                
-                                {
-                                    std::lock_guard<std::mutex> lock(stats_mutex_);
-                                    stats_.processes_killed++;
-                                }
-                                
-                                // Log with full details
-                                LogIncident(pid, proc_name, path_buf, entropy, true, 
-                                          process_behaviors_[pid].encryption_attempts);
-                            } else {
-                                // Suspicious but not confirmed yet - blocked this attempt, keep monitoring
-                                std::cout << "   ⚠️  Monitoring continues (threshold not reached)" << std::endl;
-                                std::cout << "   Threshold: " << ENCRYPTION_ATTEMPT_THRESHOLD 
-                                          << " attempts or " << RAPID_ATTEMPT_SECONDS 
-                                          << "s rapid attempts\n" << std::endl;
-                                std::cout << "BLOCKED ENCRYPTION ATTEMPT (monitoring)" << std::endl;
-                                std::cout << "   Process: " << proc_name << " (PID " << pid << ")" << std::endl;
-                                std::cout << "   File: " << path_buf << std::endl;
-                                std::cout << "   Entropy: " << std::fixed << std::setprecision(2) 
-                                         << entropy << "/8.0" << std::endl;
-                                std::cout << "   Attempts so far: " << process_behaviors_[pid].encryption_attempts << std::endl;
-                                std::cout << "   Threshold: " << ENCRYPTION_ATTEMPT_THRESHOLD << std::endl;
-                                
-                                {
-                                    std::lock_guard<std::mutex> lock(stats_mutex_);
-                                    stats_.false_positives_prevented++;
-                                }
-                                
-                                // Log but don't kill yet
-                                LogIncident(pid, proc_name, path_buf, entropy, false,
-                                          process_behaviors_[pid].encryption_attempts);
-                            }
-                        }
-                    }
-                    
-                    // Send fanotify response (allow or deny the write)
-                    struct fanotify_response response;
-                    response.fd = fd;
-                    response.response = allow ? FAN_ALLOW : FAN_DENY;
-                    write(fanotify_fd_, &response, sizeof(response));
-                }
-                
-                close(fd);
-            }
-            
+
+            // Always close fd - required to avoid exhaustion
+            if (fd >= 0) close(fd);
             ptr += metadata->event_len;
         }
     }
