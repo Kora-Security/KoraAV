@@ -18,13 +18,104 @@
 #include <bpf/bpf.h>
 #include <sys/prctl.h>
 #include <linux/securebits.h>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
 
 namespace koraav {
 namespace daemon {
 
+// ─────────────────────────────────────────────────────────
+// Thread-safe event queue for producer/consumer pattern.
+// eBPF callbacks (producers) push events here instantly.
+// Analysis threads (consumers) process them separately.
+// This prevents callbacks from doing heavy work and blocking.
+// ─────────────────────────────────────────────────────────
+template<typename T>
+class EventQueue {
+public:
+    void Push(const T& event) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (queue_.size() < MAX_QUEUE_SIZE) {
+            queue_.push(event);
+            cv_.notify_one();
+        }
+        // If full, silently drop - better than blocking
+    }
+
+    bool Pop(T& event, int timeout_ms = 100) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (!cv_.wait_for(lock,
+                          std::chrono::milliseconds(timeout_ms),
+                          [this] { return !queue_.empty() || stopped_; })) {
+            return false;  // Timeout
+        }
+        if (stopped_ && queue_.empty()) {
+            return false;
+        }
+        event = queue_.front();
+        queue_.pop();
+        return true;
+    }
+
+    void Stop() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stopped_ = true;
+        cv_.notify_all();
+    }
+
+    bool Empty() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return queue_.empty();
+    }
+
+private:
+    static constexpr size_t MAX_QUEUE_SIZE = 10000;
+    std::queue<T> queue_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    bool stopped_ = false;
+};
+
+// Event structs (mirror the eBPF structs exactly)
+struct FileEventData {
+    uint64_t timestamp;
+    uint32_t pid;
+    uint32_t uid;
+    uint32_t flags;
+    uint32_t mode;
+    char comm[16];
+    char filename[256];
+};
+
+struct ProcessEventData {
+    uint64_t timestamp;
+    uint32_t pid;
+    uint32_t ppid;
+    uint32_t uid;
+    char comm[16];
+    char cmdline[256];
+};
+
+struct NetworkEventData {
+    uint64_t timestamp;
+    uint32_t pid;
+    uint32_t uid;
+    uint32_t saddr;
+    uint32_t daddr;
+    uint16_t sport;
+    uint16_t dport;
+    char comm[16];
+};
+
 
 bool KoraAVDaemon::SetSecureBits() {
-    // Set securebits AFTER systemd has done capability transition
+    // SecureBits only work when running as a non-root user with capabilities.
+    // When running as root, skip silently - root doesn't need securebits.
+    if (getuid() == 0) {
+        return true;  // Running as root, securebits not needed
+    }
+
     int securebits = SECBIT_KEEP_CAPS |
                      SECBIT_KEEP_CAPS_LOCKED |
                      SECBIT_NO_SETUID_FIXUP |
@@ -33,8 +124,7 @@ bool KoraAVDaemon::SetSecureBits() {
                      SECBIT_NOROOT_LOCKED;
 
     if (prctl(PR_SET_SECUREBITS, securebits) < 0) {
-        std::cerr << "Warning: Failed to set securebits: " << strerror(errno) << std::endl;
-        // Don't fail - we still have NoNewPrivileges from systemd
+        // This is non-fatal, only warn at debug level
         return false;
     }
 
@@ -185,17 +275,20 @@ void KoraAVDaemon::Run() {
     
     // Start event processing threads if eBPF is loaded
     if (file_monitor_fd_ >= 0 && config_.enable_file_monitor) {
-        file_event_thread_ = std::thread(&KoraAVDaemon::ProcessFileEvents, this);
+        file_event_thread_    = std::thread(&KoraAVDaemon::ProcessFileEvents, this);
+        file_analysis_thread_ = std::thread(&KoraAVDaemon::AnalyzeFileEvents, this);
         std::cout << "✓ File monitoring active" << std::endl;
     }
     
     if (process_monitor_fd_ >= 0 && config_.enable_process_monitor) {
-        process_event_thread_ = std::thread(&KoraAVDaemon::ProcessProcessEvents, this);
+        process_event_thread_    = std::thread(&KoraAVDaemon::ProcessProcessEvents, this);
+        process_analysis_thread_ = std::thread(&KoraAVDaemon::AnalyzeProcessEvents, this);
         std::cout << "✓ Process monitoring active" << std::endl;
     }
     
     if (network_monitor_fd_ >= 0 && config_.enable_network_monitor) {
-        network_event_thread_ = std::thread(&KoraAVDaemon::ProcessNetworkEvents, this);
+        network_event_thread_    = std::thread(&KoraAVDaemon::ProcessNetworkEvents, this);
+        network_analysis_thread_ = std::thread(&KoraAVDaemon::AnalyzeNetworkEvents, this);
         std::cout << "✓ Network monitoring active" << std::endl;
     }
     
@@ -260,21 +353,14 @@ void KoraAVDaemon::Stop() {
     // InfoStealer and ClickFix don't have Stop() methods (passive detectors)
     
     // Wait for threads to finish
-    if (ransomware_thread_.joinable()) {
-        ransomware_thread_.join();
-    }
-    if (file_event_thread_.joinable()) {
-        file_event_thread_.join();
-    }
-    if (process_event_thread_.joinable()) {
-        process_event_thread_.join();
-    }
-    if (network_event_thread_.joinable()) {
-        network_event_thread_.join();
-    }
-    if (analysis_thread_.joinable()) {
-        analysis_thread_.join();
-    }
+    if (ransomware_thread_.joinable())         ransomware_thread_.join();
+    if (file_event_thread_.joinable())         file_event_thread_.join();
+    if (file_analysis_thread_.joinable())      file_analysis_thread_.join();
+    if (process_event_thread_.joinable())      process_event_thread_.join();
+    if (process_analysis_thread_.joinable())   process_analysis_thread_.join();
+    if (network_event_thread_.joinable())      network_event_thread_.join();
+    if (network_analysis_thread_.joinable())   network_analysis_thread_.join();
+    if (analysis_thread_.joinable())           analysis_thread_.join();
     
     // Cleanup eBPF resources
     if (file_monitor_link_) {
@@ -640,6 +726,15 @@ bool KoraAVDaemon::IsSensitiveFile(const std::string& path) {
 
 
 
+// ─────────────────────────────────────────────────────────────────────────────
+// FILE EVENT PROCESSING
+// Split into two parts:
+//   1. ProcessFileEvents()     - Fast poller, just pushes raw events to queue
+//   2. AnalyzeFileEvents()     - Consumer, does heavy detection work
+// ─────────────────────────────────────────────────────────────────────────────
+
+static EventQueue<FileEventData> g_file_event_queue;
+
 void KoraAVDaemon::ProcessFileEvents() {
     std::cout << "File event processor started" << std::endl;
 
@@ -648,132 +743,69 @@ void KoraAVDaemon::ProcessFileEvents() {
         return;
     }
 
-    // Get the map FD
-    struct bpf_map* file_events_map = bpf_object__find_map_by_name(file_monitor_obj_, "file_events");
-    if (!file_events_map) {
-        std::cerr << "Failed to find file_events map" << std::endl;
-        return;
-    }
+    struct bpf_map* map = bpf_object__find_map_by_name(file_monitor_obj_, "file_events");
+    if (!map) { std::cerr << "Failed to find file_events map" << std::endl; return; }
 
-    int map_fd = bpf_map__fd(file_events_map);
-    if (map_fd < 0) {
-        std::cerr << "Failed to get file_events map FD" << std::endl;
-        return;
-    }
+    int map_fd = bpf_map__fd(map);
+    if (map_fd < 0) { std::cerr << "Failed to get file_events map FD" << std::endl; return; }
 
-    // Define ring buffer callback for file events
-    // CRITICAL: Use struct with proper context passing
-    struct CallbackContext {
-        KoraAVDaemon* daemon;
+    // FAST callback - just copy event to queue and return immediately
+    // NO heavy processing here, that's done in AnalyzeFileEvents()
+    auto callback = [](void* ctx, void* data, size_t data_sz) -> int {
+        if (data_sz < sizeof(FileEventData)) return 0;
+
+        auto* daemon = static_cast<KoraAVDaemon*>(ctx);
+        FileEventData evt;
+        memcpy(&evt, data, sizeof(FileEventData));
+        daemon->file_events_received_++;
+        g_file_event_queue.Push(evt);
+        return 0;
     };
 
-    CallbackContext ctx = { this };
-
-    auto callback = [](void *ctx_ptr, void *data, size_t data_sz) -> int {
-        try {
-            // SAFE: Get daemon pointer from context
-            CallbackContext* ctx = static_cast<CallbackContext*>(ctx_ptr);
-            KoraAVDaemon* daemon = ctx->daemon;
-
-            if (!daemon) return 0;
-
-            // Define event structure (must match eBPF program)
-            struct file_event {
-                uint64_t timestamp;
-                uint32_t pid;
-                uint32_t uid;
-                uint32_t flags;        // open() flags
-                uint32_t mode;         // file mode
-                char filename[256];    // path being accessed
-                char comm[16];         // process name
-            };
-
-            if (data_sz < sizeof(file_event)) {
-                return 0;
-            }
-
-            auto *event = static_cast<const file_event*>(data);
-
-            // SAFETY: Validate event data
-            if (event->pid == 0) {
-                return 0;  // Invalid event
-            }
-
-            std::string filename(event->filename);
-            std::string proc_name(event->comm);
-
-            // Skip empty filenames
-            if (filename.empty()) {
-                return 0;
-            }
-
-            // Track file access for InfoStealer detector
-            if (daemon->infostealer_detector_) {
-                // Check if this is a sensitive file (credentials, crypto wallets, etc.)
-                if (daemon->IsSensitiveFile(filename)) {
-                    daemon->infostealer_detector_->TrackFileAccess(event->pid, filename);
-
-                    // Analyze if too many sensitive files are being accessed
-                    int score = daemon->infostealer_detector_->AnalyzeProcess(event->pid);
-                    if (score >= 80) {
-                        auto indicators = daemon->infostealer_detector_->GetThreatIndicators(event->pid);
-
-                        std::cout << "\n🚨 SUSPICIOUS FILE ACCESS DETECTED!" << std::endl;
-                        std::cout << "   Process: " << proc_name << " (PID " << event->pid << ")" << std::endl;
-                        std::cout << "   File: " << filename << std::endl;
-                        std::cout << "   InfoStealer Score: " << score << "/100" << std::endl;
-
-                        daemon->HandleThreat(event->pid, "InfoStealer", score, indicators);
-                    }
-                }
-            }
-
-            // Track file modifications for Ransomware detector
-            if (daemon->ransomware_detector_) {
-                // Check if this is a write operation
-                bool is_write = (event->flags & (O_WRONLY | O_RDWR)) != 0;
-
-                if (is_write) {
-                    // Ransomware detector tracks this internally via fanotify
-                    // But we can also pass file access info if needed
-                    // (Currently ransomware detector uses its own fanotify monitoring)
-                }
-            }
-
-            return 0;
-        } catch (const std::exception& e) {
-            std::cerr << "Exception in file callback: " << e.what() << std::endl;
-            return 0;
-        } catch (...) {
-            std::cerr << "Unknown exception in file callback" << std::endl;
-            return 0;
-        }
-    };
-
-    // Create the actual ring buffer with callback
-    struct ring_buffer* rb = ring_buffer__new(map_fd, callback, &ctx, nullptr);
-    if (!rb) {
-        std::cerr << "Failed to create ring buffer for file events" << std::endl;
-        return;
-    }
+    struct ring_buffer* rb = ring_buffer__new(map_fd, callback, this, nullptr);
+    if (!rb) { std::cerr << "Failed to create file ring buffer" << std::endl; return; }
 
     std::cout << "✓ File events ring buffer polling started (InfoStealer detection active)" << std::endl;
 
-    // Poll ring buffer for events
+    // Poll loop - just drains the ring buffer into the queue
     while (running_) {
-        // Poll with 100ms timeout
-        int ret = ring_buffer__poll(rb, 100);
-        if (ret < 0 && ret != -EINTR) {
-            std::cerr << "Error polling file events ring buffer: " << ret << std::endl;
-            break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        ring_buffer__poll(rb, 100);  // 100ms timeout
     }
 
-    // Cleanup
     ring_buffer__free(rb);
+    g_file_event_queue.Stop();
     std::cout << "File event processor stopped" << std::endl;
 }
+
+void KoraAVDaemon::AnalyzeFileEvents() {
+    FileEventData evt;
+    while (running_ || !g_file_event_queue.Empty()) {
+        if (!g_file_event_queue.Pop(evt, 200)) continue;
+
+        std::string filename(evt.filename, strnlen(evt.filename, sizeof(evt.filename)));
+        std::string proc_name(evt.comm, strnlen(evt.comm, sizeof(evt.comm)));
+
+        if (filename.empty() || evt.pid == 0) continue;
+
+        // InfoStealer analysis
+        if (infostealer_detector_ && IsSensitiveFile(filename)) {
+            infostealer_detector_->TrackFileAccess(evt.pid, filename);
+            int score = infostealer_detector_->AnalyzeProcess(evt.pid);
+
+            if (score >= config_.alert_threshold) {
+                auto indicators = infostealer_detector_->GetThreatIndicators(evt.pid);
+                threats_detected_++;
+                HandleThreat(evt.pid, "InfoStealer", score, indicators);
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PROCESS EVENT PROCESSING
+// ─────────────────────────────────────────────────────────────────────────────
+
+static EventQueue<ProcessEventData> g_process_event_queue;
 
 void KoraAVDaemon::ProcessProcessEvents() {
     std::cout << "Process event processor started" << std::endl;
@@ -783,113 +815,73 @@ void KoraAVDaemon::ProcessProcessEvents() {
         return;
     }
 
-    // Get the map FD
-    struct bpf_map* process_events_map = bpf_object__find_map_by_name(process_monitor_obj_, "process_events");
-    if (!process_events_map) {
-        std::cerr << "Failed to find process_events map" << std::endl;
-        return;
-    }
+    struct bpf_map* map = bpf_object__find_map_by_name(process_monitor_obj_, "process_events");
+    if (!map) { std::cerr << "Failed to find process_events map" << std::endl; return; }
 
-    int map_fd = bpf_map__fd(process_events_map);
-    if (map_fd < 0) {
-        std::cerr << "Failed to get process_events map FD" << std::endl;
-        return;
-    }
+    int map_fd = bpf_map__fd(map);
+    if (map_fd < 0) { std::cerr << "Failed to get process_events map FD" << std::endl; return; }
 
-    // Define ring buffer callback for process events
-    // CRITICAL: Use static function with proper context passing
-    struct CallbackContext {
-        KoraAVDaemon* daemon;
+    // FAST callback - just copy to queue
+    auto callback = [](void* ctx, void* data, size_t data_sz) -> int {
+        if (data_sz < sizeof(ProcessEventData)) return 0;
+
+        auto* daemon = static_cast<KoraAVDaemon*>(ctx);
+        ProcessEventData evt;
+        memcpy(&evt, data, sizeof(ProcessEventData));
+        daemon->process_events_received_++;
+        g_process_event_queue.Push(evt);
+        return 0;
     };
 
-    CallbackContext ctx = { this };
-
-    auto callback = [](void *ctx_ptr, void *data, size_t data_sz) -> int {
-        try {
-            // SAFE: Get daemon pointer from context
-            CallbackContext* ctx = static_cast<CallbackContext*>(ctx_ptr);
-            KoraAVDaemon* daemon = ctx->daemon;
-
-            if (!daemon) return 0;
-
-            // Define event structure (must match eBPF program)
-            struct process_event {
-                uint64_t timestamp;
-                uint32_t pid;
-                uint32_t ppid;
-                uint32_t uid;
-                char comm[16];
-            };
-
-            if (data_sz < sizeof(process_event)) {
-                return 0;
-            }
-
-            auto *event = static_cast<const process_event*>(data);
-
-            // SAFETY: Check if pid is valid
-            if (event->pid == 0) return 0;
-
-            // Get full command line from /proc
-            std::string cmdline = daemon->GetProcessCommandLine(event->pid);
-            if (cmdline.empty()) return 0;  // Process already gone
-
-            std::string proc_name(event->comm);
-
-            // Analyze with ClickFix detector
-            if (daemon->clickfix_detector_) {
-                int score = daemon->clickfix_detector_->AnalyzeCommand(cmdline, proc_name);
-
-                if (score >= 80) {
-                    // Malicious command detected!
-                    auto indicators = daemon->clickfix_detector_->GetThreatIndicators(cmdline);
-
-                    std::cout << "\n🚨 MALICIOUS COMMAND DETECTED!" << std::endl;
-                    std::cout << "   Process: " << proc_name << " (PID " << event->pid << ")" << std::endl;
-                    std::cout << "   Command: " << cmdline << std::endl;
-                    std::cout << "   Score: " << score << "/100" << std::endl;
-
-                    daemon->HandleThreat(event->pid, "ClickFix", score, indicators);
-                } else if (score >= 60) {
-                    // Suspicious but not confirmed
-                    std::cout << "⚠️  Suspicious command (score: " << score << "): " << cmdline << std::endl;
-                }
-            }
-
-            return 0;
-        } catch (const std::exception& e) {
-            std::cerr << "Exception in process callback: " << e.what() << std::endl;
-            return 0;
-        } catch (...) {
-            std::cerr << "Unknown exception in process callback" << std::endl;
-            return 0;
-        }
-    };
-
-    // Create the actual ring buffer with callback
-    struct ring_buffer* rb = ring_buffer__new(map_fd, callback, &ctx, nullptr);
-    if (!rb) {
-        std::cerr << "Failed to create ring buffer for process events" << std::endl;
-        return;
-    }
+    struct ring_buffer* rb = ring_buffer__new(map_fd, callback, this, nullptr);
+    if (!rb) { std::cerr << "Failed to create process ring buffer" << std::endl; return; }
 
     std::cout << "✓ Process events ring buffer polling started (ClickFix active)" << std::endl;
 
-    // Poll ring buffer for events
     while (running_) {
-        // Poll with 100ms timeout
-        int ret = ring_buffer__poll(rb, 100);
-        if (ret < 0 && ret != -EINTR) {
-            std::cerr << "Error polling process events ring buffer: " << ret << std::endl;
-            break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        ring_buffer__poll(rb, 100);
     }
 
-    // Cleanup
     ring_buffer__free(rb);
+    g_process_event_queue.Stop();
     std::cout << "Process event processor stopped" << std::endl;
 }
+
+void KoraAVDaemon::AnalyzeProcessEvents() {
+    ProcessEventData evt;
+    while (running_ || !g_process_event_queue.Empty()) {
+        if (!g_process_event_queue.Pop(evt, 200)) continue;
+
+        if (evt.pid == 0) continue;
+
+        // Read full cmdline from /proc (OK to do here in analysis thread)
+        std::string cmdline = GetProcessCommandLine(evt.pid);
+        std::string proc_name(evt.comm, strnlen(evt.comm, sizeof(evt.comm)));
+
+        if (cmdline.empty() && proc_name.empty()) continue;
+
+        // ClickFix analysis
+        if (clickfix_detector_) {
+            std::string to_analyze = cmdline.empty() ? proc_name : cmdline;
+            int score = clickfix_detector_->AnalyzeCommand(to_analyze, proc_name);
+
+            if (score >= config_.alert_threshold) {
+                auto indicators = clickfix_detector_->GetThreatIndicators(to_analyze);
+                threats_detected_++;
+                HandleThreat(evt.pid, "ClickFix", score, indicators);
+            } else if (score >= 50) {
+                std::cout << "⚠ Suspicious process (score " << score << "): "
+                          << proc_name << " → " << to_analyze << std::endl;
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NETWORK EVENT PROCESSING
+// ─────────────────────────────────────────────────────────────────────────────
+
+static EventQueue<NetworkEventData> g_network_event_queue;
 
 void KoraAVDaemon::ProcessNetworkEvents() {
     std::cout << "Network event processor started" << std::endl;
@@ -899,111 +891,84 @@ void KoraAVDaemon::ProcessNetworkEvents() {
         return;
     }
 
-    // Get the map FD
-    struct bpf_map* network_events_map = bpf_object__find_map_by_name(network_monitor_obj_, "network_events");
-    if (!network_events_map) {
-        std::cerr << "Failed to find network_events map" << std::endl;
-        return;
-    }
+    struct bpf_map* map = bpf_object__find_map_by_name(network_monitor_obj_, "network_events");
+    if (!map) { std::cerr << "Failed to find network_events map" << std::endl; return; }
 
-    int map_fd = bpf_map__fd(network_events_map);
-    if (map_fd < 0) {
-        std::cerr << "Failed to get network_events map FD" << std::endl;
-        return;
-    }
+    int map_fd = bpf_map__fd(map);
+    if (map_fd < 0) { std::cerr << "Failed to get network_events map FD" << std::endl; return; }
 
-    // Define ring buffer callback for network events
-    // CRITICAL: Use struct with proper context passing
-    struct CallbackContext {
-        KoraAVDaemon* daemon;
+    // FAST callback - just copy to queue
+    auto callback = [](void* ctx, void* data, size_t data_sz) -> int {
+        if (data_sz < sizeof(NetworkEventData)) return 0;
+
+        auto* daemon = static_cast<KoraAVDaemon*>(ctx);
+        NetworkEventData evt;
+        memcpy(&evt, data, sizeof(NetworkEventData));
+        daemon->network_events_received_++;
+        g_network_event_queue.Push(evt);
+        return 0;
     };
 
-    CallbackContext ctx = { this };
-
-    auto callback = [](void *ctx_ptr, void *data, size_t data_sz) -> int {
-        try {
-            // SAFE: Get daemon pointer from context
-            CallbackContext* ctx = static_cast<CallbackContext*>(ctx_ptr);
-            KoraAVDaemon* daemon = ctx->daemon;
-
-            if (!daemon) return 0;
-
-            // Define event structure (must match eBPF program)
-            struct network_event {
-                uint64_t timestamp;
-                uint32_t pid;
-                uint32_t uid;
-                uint32_t saddr;   // Source IP
-                uint32_t daddr;   // Destination IP
-                uint16_t sport;   // Source port
-                uint16_t dport;   // Destination port
-                char comm[16];
-            };
-
-            if (data_sz < sizeof(network_event)) {
-                return 0;
-            }
-
-            auto *event = static_cast<const network_event*>(data);
-
-            // SAFETY: Validate event data
-            if (event->pid == 0 || event->daddr == 0) {
-                return 0;  // Invalid event
-            }
-
-            // Track connection with C2 detector
-            if (daemon->c2_detector_) {
-                daemon->c2_detector_->TrackConnection(event->pid, event->daddr, event->dport);
-            }
-
-            // Also track for InfoStealer (potential exfiltration)
-            if (daemon->infostealer_detector_) {
-                daemon->infostealer_detector_->TrackNetworkConnection(event->pid, event->daddr, event->dport);
-            }
-
-            return 0;
-        } catch (const std::exception& e) {
-            std::cerr << "Exception in network callback: " << e.what() << std::endl;
-            return 0;
-        } catch (...) {
-            std::cerr << "Unknown exception in network callback" << std::endl;
-            return 0;
-        }
-    };
-
-    // Create the actual ring buffer with callback
-    struct ring_buffer* rb = ring_buffer__new(map_fd, callback, &ctx, nullptr);
-    if (!rb) {
-        std::cerr << "Failed to create ring buffer for network events" << std::endl;
-        return;
-    }
+    struct ring_buffer* rb = ring_buffer__new(map_fd, callback, this, nullptr);
+    if (!rb) { std::cerr << "Failed to create network ring buffer" << std::endl; return; }
 
     std::cout << "✓ Network events ring buffer polling started (C2 detection active)" << std::endl;
 
-    // Poll ring buffer for events
     while (running_) {
-        // Poll with 100ms timeout
-        int ret = ring_buffer__poll(rb, 100);
-        if (ret < 0 && ret != -EINTR) {
-            std::cerr << "Error polling network events ring buffer: " << ret << std::endl;
-            break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        ring_buffer__poll(rb, 100);
     }
 
-    // Cleanup
     ring_buffer__free(rb);
+    g_network_event_queue.Stop();
     std::cout << "Network event processor stopped" << std::endl;
+}
+
+void KoraAVDaemon::AnalyzeNetworkEvents() {
+    NetworkEventData evt;
+    while (running_ || !g_network_event_queue.Empty()) {
+        if (!g_network_event_queue.Pop(evt, 200)) continue;
+
+        if (evt.pid == 0 || evt.daddr == 0) continue;
+
+        // C2 analysis
+        if (c2_detector_) {
+            c2_detector_->TrackConnection(evt.pid, evt.daddr, evt.dport);
+            int score = c2_detector_->AnalyzeProcess(evt.pid);
+
+            if (score >= config_.alert_threshold) {
+                auto indicators = c2_detector_->GetThreatIndicators(evt.pid);
+                threats_detected_++;
+                HandleThreat(evt.pid, "C2_Communication", score, indicators);
+            }
+        }
+
+        // InfoStealer exfil tracking
+        if (infostealer_detector_) {
+            infostealer_detector_->TrackNetworkConnection(evt.pid, evt.daddr, evt.dport);
+        }
+    }
 }
 
 void KoraAVDaemon::RunPeriodicAnalysis() {
     std::cout << "Periodic analysis thread started" << std::endl;
-    
+
+    int tick = 0;
+
     while (running_) {
-        // Run periodic checks every 5 seconds
         std::this_thread::sleep_for(std::chrono::seconds(5));
-        
-        // Check for suspicious processes from detection engines
+        tick++;
+
+        // ── Status report every 60 seconds ──────────────────────────────────
+        if (tick % 12 == 0) {
+            std::cout << "\n📊 [Status] Events received — "
+                      << "File: " << file_events_received_.load()
+                      << "  Process: " << process_events_received_.load()
+                      << "  Network: " << network_events_received_.load()
+                      << "  Threats: " << threats_detected_.load()
+                      << std::endl;
+        }
+
+        // ── Ransomware: check confirmed threats ──────────────────────────────
         if (ransomware_detector_) {
             auto suspicious = ransomware_detector_->GetSuspiciousProcesses();
             for (const auto& proc : suspicious) {
@@ -1012,46 +977,41 @@ void KoraAVDaemon::RunPeriodicAnalysis() {
                     for (const auto& file : proc.targeted_files) {
                         indicators.push_back("Encrypted: " + file);
                     }
-                    
-                    // Calculate threat score based on behavior
-                    int score = 60;  // Base score for suspicious
-                    score += proc.encryption_attempts * 10;  // +10 per attempt
-                    score += (proc.files_targeted >= 5) ? 25 : 0;  // +25 if many files
-                    score = std::min(score, 100);  // Cap at 100
-                    
+                    int score = std::min(100, 60 + proc.encryption_attempts * 10
+                                              + (proc.files_targeted >= 5 ? 25 : 0));
+                    threats_detected_++;
                     HandleThreat(proc.pid, "Ransomware", score, indicators);
                 }
             }
         }
-        
+
+        // ── InfoStealer: check accumulated scores ────────────────────────────
         if (infostealer_detector_) {
             auto suspicious_pids = infostealer_detector_->GetSuspiciousProcesses(70);
             for (const auto& pid : suspicious_pids) {
                 int score = infostealer_detector_->AnalyzeProcess(pid);
-                auto indicators = infostealer_detector_->GetThreatIndicators(pid);
-                
-                // Only trigger on high confidence (score >= 80)
-                if (score >= 80) {
+                if (score >= config_.block_threshold) {
+                    auto indicators = infostealer_detector_->GetThreatIndicators(pid);
+                    threats_detected_++;
                     HandleThreat(pid, "InfoStealer", score, indicators);
                 }
             }
         }
-        
-        // Check for C2 communication
+
+        // ── C2: check accumulated scores ─────────────────────────────────────
         if (c2_detector_) {
             auto suspicious_pids = c2_detector_->GetSuspiciousProcesses(70);
             for (const auto& pid : suspicious_pids) {
                 int score = c2_detector_->AnalyzeProcess(pid);
-                auto indicators = c2_detector_->GetThreatIndicators(pid);
-                
-                // Trigger on high confidence (score >= 75 for C2)
-                if (score >= 75) {
+                if (score >= config_.alert_threshold) {
+                    auto indicators = c2_detector_->GetThreatIndicators(pid);
+                    threats_detected_++;
                     HandleThreat(pid, "C2_Communication", score, indicators);
                 }
             }
         }
     }
-    
+
     std::cout << "Periodic analysis thread stopped" << std::endl;
 }
 
