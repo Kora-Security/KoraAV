@@ -53,36 +53,36 @@ static __always_inline bool is_interesting_process(const char *comm) {
         starts_with(comm, "fish", 4) ||
         starts_with(comm, "dash", 4)) {
         return true;
-        }
-
-        // Terminals (medium priority)
-        if (starts_with(comm, "konsole", 7) ||
-            starts_with(comm, "gnome-terminal", 14) ||
-            starts_with(comm, "xterm", 5) ||
-            starts_with(comm, "alacritty", 9)) {
-            return true;
-            }
-
-            // Scripting languages (medium priority - could be malicious scripts)
-            if (starts_with(comm, "python", 6) ||
-                starts_with(comm, "perl", 4) ||
-                starts_with(comm, "ruby", 4) ||
-                starts_with(comm, "node", 4)) {
-                return true;
-                }
-
-                // Suspicious executables
-                if (starts_with(comm, "nc", 2) ||           // netcat
-                    starts_with(comm, "ncat", 4) ||
-                    starts_with(comm, "socat", 5) ||
-                    starts_with(comm, "wget", 4) ||
-                    starts_with(comm, "curl", 4) ||
-                    starts_with(comm, "base64", 6) ||
-                    starts_with(comm, "openssl", 7)) {
-                    return true;
-                    }
-
-                    return false;
+    }
+    
+    // Terminals (medium priority)
+    if (starts_with(comm, "konsole", 7) ||
+        starts_with(comm, "gnome-terminal", 14) ||
+        starts_with(comm, "xterm", 5) ||
+        starts_with(comm, "alacritty", 9)) {
+        return true;
+    }
+    
+    // Scripting languages (medium priority - could be malicious scripts)
+    if (starts_with(comm, "python", 6) ||
+        starts_with(comm, "perl", 4) ||
+        starts_with(comm, "ruby", 4) ||
+        starts_with(comm, "node", 4)) {
+        return true;
+    }
+    
+    // Suspicious executables
+    if (starts_with(comm, "nc", 2) ||           // netcat
+        starts_with(comm, "ncat", 4) ||
+        starts_with(comm, "socat", 5) ||
+        starts_with(comm, "wget", 4) ||
+        starts_with(comm, "curl", 4) ||
+        starts_with(comm, "base64", 6) ||
+        starts_with(comm, "openssl", 7)) {
+        return true;
+    }
+    
+    return false;
 }
 
 // Helper: Should ignore process (system processes we don't care about)
@@ -96,31 +96,31 @@ static __always_inline bool should_ignore_process(const char *comm) {
         starts_with(comm, "cron", 4) ||
         starts_with(comm, "atd", 3)) {
         return true;
-        }
-
-        // Desktop environment (too noisy)
-        if (starts_with(comm, "gnome-", 6) ||
-            starts_with(comm, "kde", 3) ||
-            starts_with(comm, "plasma", 6) ||
-            starts_with(comm, "Xorg", 4) ||
-            starts_with(comm, "pulseaudio", 10)) {
-            return true;
-            }
-
-            return false;
+    }
+    
+    // Desktop environment (too noisy)
+    if (starts_with(comm, "gnome-", 6) ||
+        starts_with(comm, "kde", 3) ||
+        starts_with(comm, "plasma", 6) ||
+        starts_with(comm, "Xorg", 4) ||
+        starts_with(comm, "pulseaudio", 10)) {
+        return true;
+    }
+    
+    return false;
 }
 
 // Helper: Rate limit check
 static __always_inline bool check_rate_limit(__u32 pid) {
     __u64 now = bpf_ktime_get_ns();
     __u64 *last_time = bpf_map_lookup_elem(&proc_rate_limit_map, &pid);
-
+    
     if (last_time) {
         if (now - *last_time < RATE_LIMIT_NS) {
             return false;
         }
     }
-
+    
     bpf_map_update_elem(&proc_rate_limit_map, &pid, &now, BPF_ANY);
     return true;
 }
@@ -130,24 +130,24 @@ int trace_execve(struct trace_event_raw_sys_enter *ctx) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = pid_tgid >> 32;
     __u32 uid = bpf_get_current_uid_gid() & 0xFFFFFFFF;
-
+    
     // FILTER #1: Skip kernel threads
     if (pid == 0) {
         return 0;
     }
-
+    
     // FILTER #2: Get and check process name
     char comm[MAX_COMM_LEN] = {};
     bpf_get_current_comm(&comm, sizeof(comm));
-
+    
     // Skip ignored processes
     if (should_ignore_process(comm)) {
         return 0;
     }
-
+    
     // Only send event if process is interesting OR we're sampling
     bool is_interesting = is_interesting_process(comm);
-
+    
     // FILTER #3: If not interesting, use heavy sampling (1% of events)
     if (!is_interesting) {
         // Simple sampling: only send 1 out of 100 uninteresting events
@@ -155,44 +155,44 @@ int trace_execve(struct trace_event_raw_sys_enter *ctx) {
             return 0;
         }
     }
-
+    
     // FILTER #4: Rate limiting
     if (!check_rate_limit(pid)) {
         return 0;
     }
-
-    // All filters passed - send event
+    
+    // ✅ All filters passed - send event
     struct process_event *event = bpf_ringbuf_reserve(&process_events, sizeof(*event), 0);
     if (!event) {
         return 0;
     }
-
+    
     event->timestamp = bpf_ktime_get_ns();
     event->pid = pid;
     event->uid = uid;
-
+    
     __builtin_memcpy(event->comm, comm, MAX_COMM_LEN);
-
+    
     // Get parent PID
     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
     struct task_struct *parent;
     BPF_CORE_READ_INTO(&parent, task, real_parent);
     BPF_CORE_READ_INTO(&event->ppid, parent, tgid);
-
+    
     // Try to read command line (first argument to execve)
     const char **argv_ptr = (const char **)ctx->args[1];
     const char *first_arg = NULL;
-
+    
     // Read pointer to first argument
     bpf_probe_read_user(&first_arg, sizeof(first_arg), argv_ptr);
-
+    
     if (first_arg) {
         // Read the actual command line string
         bpf_probe_read_user_str(event->cmdline, MAX_CMDLINE_LEN, first_arg);
     } else {
         event->cmdline[0] = '\0';
     }
-
+    
     bpf_ringbuf_submit(event, 0);
     return 0;
 }
