@@ -52,12 +52,12 @@ static __always_inline bool is_localhost(__u32 ip) {
     if (first_octet == 127) {
         return true;
     }
-
+    
     // 0.0.0.0
     if (ip == 0) {
         return true;
     }
-
+    
     return false;
 }
 
@@ -65,22 +65,22 @@ static __always_inline bool is_localhost(__u32 ip) {
 static __always_inline bool is_private_ip(__u32 ip) {
     __u8 first = ip & 0xFF;
     __u8 second = (ip >> 8) & 0xFF;
-
+    
     // 10.0.0.0/8
     if (first == 10) {
         return true;
     }
-
+    
     // 172.16.0.0/12
     if (first == 172 && second >= 16 && second <= 31) {
         return true;
     }
-
+    
     // 192.168.0.0/16
     if (first == 192 && second == 168) {
         return true;
     }
-
+    
     return false;
 }
 
@@ -97,9 +97,9 @@ static __always_inline bool is_suspicious_port(__u16 port) {
         port == 12345 ||
         port == 54321) {
         return true;
-        }
-
-        return false;
+    }
+    
+    return false;
 }
 
 // Helper: Check if process should be monitored
@@ -118,9 +118,9 @@ static __always_inline bool should_monitor_process(const char *comm) {
         starts_with(comm, "bash", 4) ||
         starts_with(comm, "sh", 2)) {
         return true;
-        }
-
-        return false;
+    }
+    
+    return false;
 }
 
 // Helper: Should ignore process (browsers, system services)
@@ -131,33 +131,33 @@ static __always_inline bool should_ignore_process(const char *comm) {
         starts_with(comm, "chromium", 8) ||
         starts_with(comm, "brave", 5)) {
         return true;
-        }
-
-        // System services
-        if (starts_with(comm, "systemd", 7) ||
-            starts_with(comm, "dbus-daemon", 11) ||
-            starts_with(comm, "korad", 5) ||
-            starts_with(comm, "koraav", 6) ||
-            starts_with(comm, "rsyslogd", 8) ||
-            starts_with(comm, "NetworkManager", 14) ||
-            starts_with(comm, "dhclient", 8)) {
-            return true;
-            }
-
-            return false;
+    }
+    
+    // System services
+    if (starts_with(comm, "systemd", 7) ||
+        starts_with(comm, "dbus-daemon", 11) ||
+        starts_with(comm, "korad", 5) ||
+        starts_with(comm, "koraav", 6) ||
+        starts_with(comm, "rsyslogd", 8) ||
+        starts_with(comm, "NetworkManager", 14) ||
+        starts_with(comm, "dhclient", 8)) {
+        return true;
+    }
+    
+    return false;
 }
 
 // Helper: Rate limit check
 static __always_inline bool check_rate_limit(__u32 pid) {
     __u64 now = bpf_ktime_get_ns();
     __u64 *last_time = bpf_map_lookup_elem(&net_rate_limit_map, &pid);
-
+    
     if (last_time) {
         if (now - *last_time < RATE_LIMIT_NS) {
             return false;
         }
     }
-
+    
     bpf_map_update_elem(&net_rate_limit_map, &pid, &now, BPF_ANY);
     return true;
 }
@@ -167,59 +167,59 @@ int trace_tcp_connect(struct pt_regs *ctx) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = pid_tgid >> 32;
     __u32 uid = bpf_get_current_uid_gid() & 0xFFFFFFFF;
-
+    
     // FILTER #1: Skip kernel threads
     if (pid == 0) {
         return 0;
     }
-
+    
     // FILTER #2: Get and check process name
     char comm[MAX_COMM_LEN] = {};
     bpf_get_current_comm(&comm, sizeof(comm));
-
+    
     if (should_ignore_process(comm)) {
         return 0;
     }
-
+    
     // FILTER #3: Get socket and read connection details
     struct sock *sk = (struct sock *)PT_REGS_PARM1(ctx);
     if (!sk) {
         return 0;
     }
-
+    
     __u32 saddr = 0, daddr = 0;
     __u16 sport = 0, dport = 0;
-
+    
     BPF_CORE_READ_INTO(&saddr, sk, __sk_common.skc_rcv_saddr);
     BPF_CORE_READ_INTO(&daddr, sk, __sk_common.skc_daddr);
     BPF_CORE_READ_INTO(&sport, sk, __sk_common.skc_num);
     BPF_CORE_READ_INTO(&dport, sk, __sk_common.skc_dport);
-
+    
     dport = __builtin_bswap16(dport);
-
+    
     // FILTER #4: Skip localhost connections (less interesting)
     if (is_localhost(daddr)) {
         return 0;
     }
-
+    
     // FILTER #5: Prioritize based on destination
     bool is_suspicious = false;
-
+    
     // Always send if suspicious port
     if (is_suspicious_port(dport)) {
         is_suspicious = true;
     }
-
+    
     // Always send if suspicious process
     if (should_monitor_process(comm)) {
         is_suspicious = true;
     }
-
+    
     // Always send if connecting to external IP (not private)
     if (!is_private_ip(daddr)) {
         is_suspicious = true;
     }
-
+    
     // FILTER #6: For non-suspicious connections, heavy sampling
     if (!is_suspicious) {
         // Only send 5% of boring connections
@@ -227,12 +227,12 @@ int trace_tcp_connect(struct pt_regs *ctx) {
             return 0;
         }
     }
-
+    
     // FILTER #7: Rate limiting per PID
     if (!check_rate_limit(pid)) {
         return 0;
     }
-
+    
     // FILTER #8: Skip common legitimate ports for non-suspicious processes
     if (!is_suspicious) {
         if (dport == 80 ||    // HTTP
@@ -243,19 +243,19 @@ int trace_tcp_connect(struct pt_regs *ctx) {
             dport == 587 ||   // SMTP submission
             dport == 993 ||   // IMAPS
             dport == 995) {   // POP3S
-                // Sample only 1% of these
-                if ((bpf_get_prandom_u32() % 100) != 0) {
-                    return 0;
-                }
+            // Sample only 1% of these
+            if ((bpf_get_prandom_u32() % 100) != 0) {
+                return 0;
             }
+        }
     }
-
+    
     // ✅ All filters passed - send event
     struct network_event *event = bpf_ringbuf_reserve(&network_events, sizeof(*event), 0);
     if (!event) {
         return 0;
     }
-
+    
     event->timestamp = bpf_ktime_get_ns();
     event->pid = pid;
     event->uid = uid;
@@ -263,9 +263,9 @@ int trace_tcp_connect(struct pt_regs *ctx) {
     event->daddr = daddr;
     event->sport = sport;
     event->dport = dport;
-
+    
     __builtin_memcpy(event->comm, comm, MAX_COMM_LEN);
-
+    
     bpf_ringbuf_submit(event, 0);
     return 0;
 }
