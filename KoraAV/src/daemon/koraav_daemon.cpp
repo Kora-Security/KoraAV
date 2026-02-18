@@ -217,7 +217,9 @@ bool KoraAVDaemon::Initialize(const std::string& config_path) {
             "/root",
             "/opt",
             "/var",
-            "/srv"
+            "/srv",
+            "/mnt",
+            "/media"
         };
         
         if (!ransomware_detector_->Initialize(protected_paths)) {
