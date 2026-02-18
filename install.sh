@@ -514,7 +514,7 @@ detect_clickfix = true
 
 [paths]
 exclude_paths = /proc,/sys,/dev,/tmp/.X11-unix
-sensitive_paths = ~/.ssh,~/.gnupg,~/.mozilla,~/.config/google-chrome,~/Documents,~/Downloads
+sensitive_paths = /home/*/.ssh,/home/*/.gnupg,/home/*/.mozilla,/home/*/.config/google-chrome,/home/*/Documents,/home/*/Downloads,/root/.ssh,/root/.gnupg
 
 [thresholds]
 alert_threshold = 61
