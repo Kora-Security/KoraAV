@@ -660,40 +660,46 @@ bool KoraAVDaemon::AttacheBPFProbes() {
 
 
 bool KoraAVDaemon::IsSensitiveFile(const std::string& path) {
-    // Check for sensitive file patterns
+    // Check for sensitive file patterns AND directories
+    // IMPORTANT: Match directory patterns too, not just specific files,
+    // because eBPF events often report directory paths (e.g. ~/.ssh/)
     static const std::vector<std::string> sensitive_patterns = {
-        // SSH keys
-        "/.ssh/id_rsa",
-        "/.ssh/id_ed25519",
-        "/.ssh/id_ecdsa",
-        "/.ssh/authorized_keys",
+        // SSH keys (directory AND specific files)
+        "/.ssh/",
+        "/id_rsa",
+        "/id_ed25519",
+        "/id_ecdsa",
+        "/authorized_keys",
 
         // GPG keys
         "/.gnupg/",
-        "/.gnupg/secring.gpg",
-        "/.gnupg/private-keys",
+        "/secring.gpg",
+        "/private-keys",
 
         // Browser data
-        "/.mozilla/firefox/",
-        "/.config/google-chrome/",
-        "/.config/chromium/",
+        "/.mozilla/",
+        "/google-chrome/",
+        "/chromium/",
+        "/BraveSoftware/",
         "/Library/Application Support/Google/Chrome/",
         "/Library/Application Support/Firefox/",
 
         // Crypto wallets
-        "/.bitcoin/wallet.dat",
-        "/.ethereum/keystore/",
+        "/wallet",
+        "/.bitcoin/",
+        "/.ethereum/",
         "/.metamask/",
-        "/Electrum/wallets/",
+        "/Electrum/",
 
         // Password managers
         "/.password-store/",
         "/KeePass/",
         "/1Password/",
 
-        // AWS credentials
-        "/.aws/credentials",
-        "/.aws/config",
+        // AWS/Docker/Kube credentials
+        "/.aws/",
+        "/.docker/",
+        "/.kube/",
 
         // Database credentials
         "/.my.cnf",
@@ -701,13 +707,19 @@ bool KoraAVDaemon::IsSensitiveFile(const std::string& path) {
 
         // Environment files
         "/.env",
-        "/.env.local",
+
+        // Documents and Downloads
+        "/Documents/",
+        "/Downloads/",
 
         // Common credential files
-        "/credentials.json",
-        "/secrets.json",
-        "/token.json",
-        "/auth.json"
+        "/credentials",
+        "/secrets",
+        "/token",
+        "/auth.json",
+        "/passwords",
+        "/cookies",
+        "/login"
     };
 
     // Convert to lowercase for case-insensitive matching
