@@ -791,6 +791,8 @@ void KoraAVDaemon::ProcessFileEvents() {
 
 void KoraAVDaemon::AnalyzeFileEvents() {
     FileEventData evt;
+    static int event_count = 0;
+    
     while (running_ || !g_file_event_queue.Empty()) {
         if (!g_file_event_queue.Pop(evt, 200)) continue;
 
@@ -799,10 +801,32 @@ void KoraAVDaemon::AnalyzeFileEvents() {
 
         if (filename.empty() || evt.pid == 0) continue;
 
+        // DEBUG: Log first 20 events to see what's happening
+        if (++event_count <= 20) {
+            std::cout << "[DEBUG AnalyzeFile " << event_count << "] File: " << filename 
+                      << " | PID: " << evt.pid << " | Proc: " << proc_name << std::endl;
+        }
+
         // InfoStealer analysis
-        if (infostealer_detector_ && IsSensitiveFile(filename)) {
+        bool is_sensitive = IsSensitiveFile(filename);
+        
+        if (event_count <= 20) {
+            std::cout << "[DEBUG] IsSensitiveFile(" << filename << ") = " 
+                      << (is_sensitive ? "TRUE" : "FALSE") << std::endl;
+        }
+        
+        if (infostealer_detector_ && is_sensitive) {
+            if (event_count <= 20) {
+                std::cout << "[DEBUG] ✓ Tracking file access for PID " << evt.pid << std::endl;
+            }
+            
             infostealer_detector_->TrackFileAccess(evt.pid, filename);
             int score = infostealer_detector_->AnalyzeProcess(evt.pid);
+
+            if (event_count <= 20 || score > 0) {
+                std::cout << "[DEBUG] InfoStealer score for PID " << evt.pid << ": " << score 
+                          << " (threshold: " << config_.alert_threshold << ")" << std::endl;
+            }
 
             if (score >= config_.alert_threshold) {
                 auto indicators = infostealer_detector_->GetThreatIndicators(evt.pid);
