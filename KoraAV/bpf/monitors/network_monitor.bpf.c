@@ -1,11 +1,29 @@
 // bpf/monitors/network_monitor.bpf.c
-// Enterprise-grade real-time network connection monitoring
+// Attempted enterprise-grade real-time network connection monitoring
 // SPDX-License-Identifier: GPL-2.0
 
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
+
+// Endianness helpers (if not in vmlinux.h)
+#ifndef __bpf_ntohs
+#define __bpf_ntohs(x) __builtin_bswap16(x)
+#endif
+
+#ifndef __bpf_ntohl  
+#define __bpf_ntohl(x) __builtin_bswap32(x)
+#endif
+
+// Socket family constants (if not in vmlinux.h)
+#ifndef AF_INET
+#define AF_INET 2
+#endif
+
+#ifndef AF_INET6
+#define AF_INET6 10
+#endif
 
 #define MAX_COMM_LEN 16
 #define RATE_LIMIT_NS 200000000  // 200ms between events per PID
