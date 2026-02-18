@@ -1,5 +1,5 @@
 // bpf/monitors/file_monitor.bpf.c
-// Enterprise-grade real-time file access monitoring
+// Attempted enterprise-grade real-time file access monitoring
 // SPDX-License-Identifier: GPL-2.0
 
 #include "vmlinux.h"
@@ -53,35 +53,39 @@ static __always_inline bool starts_with(const char *str, const char *prefix, int
     return true;
 }
 
+// Helper: Check if path contains substring (simple implementation)
+static __always_inline bool contains(const char *str, const char *substr, int max_len) {
+    for (int i = 0; i < max_len && str[i] != '\0'; i++) {
+        bool match = true;
+        for (int j = 0; substr[j] != '\0' && (i + j) < max_len; j++) {
+            if (str[i + j] != substr[j]) {
+                match = false;
+                break;
+            }
+        }
+        if (match) return true;
+    }
+    return false;
+}
+
 // Helper: Check if path is sensitive (worth monitoring)
 static __always_inline bool is_sensitive_path(const char *path) {
-    // High-priority paths (always monitor)
-    if (starts_with(path, "/home/", 7)) {
-        // Check for sensitive subdirectories
-        if (starts_with(path, ".ssh/", 5) ||
-            starts_with(path, ".gnupg/", 7) ||
-            starts_with(path, ".aws/", 5) ||
-            starts_with(path, ".mozilla/", 9) ||
-            starts_with(path, ".config/google-chrome/", 22) ||
-            starts_with(path, "Documents/", 10) ||
-            starts_with(path, "Downloads/", 10) ||
-            starts_with(path, ".password-store/", 16)) {
-            return true;
-        }
-    }
+    // Check for sensitive patterns ANYWHERE in the path
+    // This works because if path is /home/you/.ssh/id_rsa,
+    // it will contain "/.ssh/" which is what we want to detect
     
-    // Root user sensitive files
-    if (starts_with(path, "/root/.ssh/", 11) ||
-        starts_with(path, "/root/.gnupg/", 13) ||
-        starts_with(path, "/root/.aws/", 11)) {
-        return true;
-    }
-    
-    // System credentials
-    if (starts_with(path, "/etc/passwd", 11) ||
-        starts_with(path, "/etc/shadow", 11) ||
-        starts_with(path, "/etc/sudoers", 12) ||
-        starts_with(path, "/etc/ssh/", 9)) {
+    if (contains(path, "/.ssh/", 256) ||
+        contains(path, "/.gnupg/", 256) ||
+        contains(path, "/.aws/", 256) ||
+        contains(path, "/.mozilla/", 256) ||
+        contains(path, "/google-chrome/", 256) ||
+        contains(path, "/Documents/", 256) ||
+        contains(path, "/Downloads/", 256) ||
+        contains(path, "/.password-store/", 256) ||
+        contains(path, "/etc/passwd", 256) ||
+        contains(path, "/etc/shadow", 256) ||
+        contains(path, "/etc/sudoers", 256) ||
+        contains(path, "/etc/ssh/", 256)) {
         return true;
     }
     
