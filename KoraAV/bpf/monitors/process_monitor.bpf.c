@@ -1,5 +1,5 @@
 // bpf/monitors/process_monitor.bpf.c
-// Enterprise-grade real-time process execution monitoring
+// Attempted enterprise-grade real-time process execution monitoring
 // SPDX-License-Identifier: GPL-2.0
 
 #include "vmlinux.h"
