@@ -250,6 +250,8 @@ std::string InfoStealerDetector::GetDirectoryCategory(const std::string& path) {
     if (path.find("/etc/ssh/") != std::string::npos) {
         return "System SSH Config";
     }
+
+    return ""; // Removes compiler warning/error
 }
 
 bool InfoStealerDetector::IsExfiltrationPattern(const ProcessActivity& activity) {
