@@ -824,10 +824,21 @@ void KoraAVDaemon::AnalyzeFileEvents() {
             
             infostealer_detector_->TrackFileAccess(evt.pid, filename);
             int score = infostealer_detector_->AnalyzeProcess(evt.pid);
+            
+            // Get detailed indicators to see what's being tracked
+            auto indicators = infostealer_detector_->GetThreatIndicators(evt.pid);
 
-            if (event_count <= 20 || score > 0) {
-                std::cout << "[DEBUG] InfoStealer score for PID " << evt.pid << ": " << score 
-                          << " (threshold: " << config_.alert_threshold << ")" << std::endl;
+            if (event_count <= 30 || score > 0) {
+                std::cout << "[DEBUG] InfoStealer PID " << evt.pid << ": score=" << score 
+                          << " indicators=" << indicators.size()
+                          << " threshold=" << config_.alert_threshold << std::endl;
+                
+                // Show first few indicators for debugging
+                if (event_count <= 30 && !indicators.empty()) {
+                    for (size_t i = 0; i < std::min(size_t(3), indicators.size()); i++) {
+                        std::cout << "[DEBUG]   • " << indicators[i] << std::endl;
+                    }
+                }
             }
 
             if (score >= config_.alert_threshold) {
