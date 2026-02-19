@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <chrono>
 #include <set>
+#include <unordered_set>
 
 namespace koraav {
 namespace realtime {
@@ -75,9 +76,9 @@ private:
         std::unordered_set<std::string> sensitive_files_accessed;
         std::unordered_set<std::string> sensitive_directories;
     };
-    
+
     std::unordered_map<uint32_t, ProcessActivity> process_activities_;
-    
+
     // Detection logic
     int CalculateSensitivityScore(const ProcessActivity& activity);
     bool IsSensitiveDirectory(const std::string& path);
