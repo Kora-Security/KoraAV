@@ -13,8 +13,8 @@
 
 struct process_event {
     __u64 timestamp;
-    __u32 pid;
-    __u32 ppid;
+    __u32 tgid;
+    __u32 ptgid;
     __u32 uid;
     char comm[MAX_COMM_LEN];
     char cmdline[MAX_CMDLINE_LEN];
@@ -111,9 +111,9 @@ static __always_inline bool should_ignore_process(const char *comm) {
 }
 
 // Helper: Rate limit check
-static __always_inline bool check_rate_limit(__u32 pid) {
+static __always_inline bool check_rate_limit(__u32 tgid) {
     __u64 now = bpf_ktime_get_ns();
-    __u64 *last_time = bpf_map_lookup_elem(&proc_rate_limit_map, &pid);
+    __u64 *last_time = bpf_map_lookup_elem(&proc_rate_limit_map, &tgid);
     
     if (last_time) {
         if (now - *last_time < RATE_LIMIT_NS) {
@@ -121,20 +121,20 @@ static __always_inline bool check_rate_limit(__u32 pid) {
         }
     }
     
-    bpf_map_update_elem(&proc_rate_limit_map, &pid, &now, BPF_ANY);
+    bpf_map_update_elem(&proc_rate_limit_map, &tgid, &now, BPF_ANY);
     return true;
 }
 
 SEC("tracepoint/syscalls/sys_enter_execve")
 int trace_execve(struct trace_event_raw_sys_enter *ctx) {
-    //__u64 pid_tgid = bpf_get_current_pid_tgid();
-    //__u32 tgid = pid_tgid >> 32;
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 tgid = pid_tgid >> 32;
+    // __u64 tgid_tgid = bpf_get_current_tgid_tgid();
+    // __u32 tgid = tgid_tgid >> 32;
+    __u64 tgid_tgid = bpf_get_current_tgid_tgid();
+    __u32 tgid = tgid_tgid >> 32;
     __u32 uid = bpf_get_current_uid_gid() & 0xFFFFFFFF;
     
     // FILTER #1: Skip kernel threads
-    if (pid == 0) {
+    if (tgid == 0) {
         return 0;
     }
     
@@ -159,7 +159,7 @@ int trace_execve(struct trace_event_raw_sys_enter *ctx) {
     }
     
     // FILTER #4: Rate limiting
-    if (!check_rate_limit(pid)) {
+    if (!check_rate_limit(tgid)) {
         return 0;
     }
     
@@ -170,7 +170,7 @@ int trace_execve(struct trace_event_raw_sys_enter *ctx) {
     }
     
     event->timestamp = bpf_ktime_get_ns();
-    event->pid = pid;
+    event->tgid = tgid;
     event->uid = uid;
     
     __builtin_memcpy(event->comm, comm, MAX_COMM_LEN);
@@ -179,7 +179,7 @@ int trace_execve(struct trace_event_raw_sys_enter *ctx) {
     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
     struct task_struct *parent;
     BPF_CORE_READ_INTO(&parent, task, real_parent);
-    BPF_CORE_READ_INTO(&event->ppid, parent, tgid);
+    BPF_CORE_READ_INTO(&event->ptgid, parent, tgid);
     
     // Try to read command line (first argument to execve)
     const char **argv_ptr = (const char **)ctx->args[1];
