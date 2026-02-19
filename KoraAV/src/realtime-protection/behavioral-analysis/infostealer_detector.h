@@ -51,14 +51,29 @@ public:
     std::vector<uint32_t> GetSuspiciousProcesses(int min_score = 70);
 
 private:
+    struct TimedFileAccess {
+        std::string path;
+        std::chrono::system_clock::time_point timestamp;
+    };
+
+    struct TimedNetworkConnection {
+        uint32_t dest_ip;
+        uint16_t dest_port;
+        std::chrono::system_clock::time_point timestamp;
+    };
+
     struct ProcessActivity {
-        std::set<std::string> sensitive_files_accessed;
-        std::set<std::string> sensitive_directories;
-        std::vector<std::pair<uint32_t, uint16_t>> network_connections;  // IP, port
+        int file_access_count = 0;
+        int network_connection_count = 0;
+
         std::chrono::system_clock::time_point first_activity;
         std::chrono::system_clock::time_point last_activity;
-        int file_access_count;
-        int network_connection_count;
+
+        std::vector<TimedFileAccess> file_accesses;
+        std::vector<TimedNetworkConnection> network_connections;
+
+        std::unordered_set<std::string> sensitive_files_accessed;
+        std::unordered_set<std::string> sensitive_directories;
     };
     
     std::unordered_map<uint32_t, ProcessActivity> process_activities_;
