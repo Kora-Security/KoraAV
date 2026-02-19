@@ -182,10 +182,10 @@ static __always_inline bool check_rate_limit(__u32 tgid) {
 
 SEC("kprobe/tcp_connect")
 int trace_tcp_connect(struct pt_regs *ctx) {
-    // __u64 tgid_tgid = bpf_get_current_tgid_tgid();
-    // __u32 tgid = tgid_tgid >> 32;
-    __u64 tgid_tgid = bpf_get_current_tgid_tgid();
-    __u32 tgid = tgid_tgid >> 32;
+    // __u64 pid_tgid = bpf_get_current_pid_tgid();
+    // __u32 pid = pid_tgid >> 32;
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 tgid = pid_tgid >> 32;
     __u32 uid = bpf_get_current_uid_gid() & 0xFFFFFFFF;
     
     // FILTER #1: Skip kernel threads
