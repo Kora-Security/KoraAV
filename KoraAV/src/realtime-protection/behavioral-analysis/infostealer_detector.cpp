@@ -11,19 +11,21 @@ InfoStealerDetector::InfoStealerDetector() {
 
 void InfoStealerDetector::TrackFileAccess(uint32_t pid, const std::string& path) {
     auto& activity = process_activities_[pid];
-    
+
     auto now = std::chrono::system_clock::now();
-    if (activity.file_access_count == 0) {
+
+    if (activity.file_access_count == 0 && activity.network_connection_count == 0) {
         activity.first_activity = now;
     }
+
     activity.last_activity = now;
-    
     activity.file_access_count++;
-    
-    // Track if it's a sensitive file
+
+    activity.file_accesses.push_back({path, now});
+
     if (IsSensitiveDirectory(path)) {
         activity.sensitive_files_accessed.insert(path);
-        
+
         std::string category = GetDirectoryCategory(path);
         if (!category.empty()) {
             activity.sensitive_directories.insert(category);
@@ -31,17 +33,23 @@ void InfoStealerDetector::TrackFileAccess(uint32_t pid, const std::string& path)
     }
 }
 
-void InfoStealerDetector::TrackNetworkConnection(uint32_t pid, uint32_t dest_ip, uint16_t dest_port) {
+void InfoStealerDetector::TrackNetworkConnection(
+    uint32_t pid,
+    uint32_t dest_ip,
+    uint16_t dest_port
+) {
     auto& activity = process_activities_[pid];
-    
+
     auto now = std::chrono::system_clock::now();
-    if (activity.network_connection_count == 0 && activity.file_access_count == 0) {
+
+    if (activity.file_access_count == 0 && activity.network_connection_count == 0) {
         activity.first_activity = now;
     }
+
     activity.last_activity = now;
-    
     activity.network_connection_count++;
-    activity.network_connections.push_back({dest_ip, dest_port});
+
+    activity.network_connections.push_back({dest_ip, dest_port, now});
 }
 
 int InfoStealerDetector::AnalyzeProcess(uint32_t pid) {
@@ -197,7 +205,11 @@ bool InfoStealerDetector::IsSensitiveDirectory(const std::string& path) {
         "/passwords",
         "/cookies",
         "/login",
-        "/key_data"
+        "/key_data",
+        "/etc/passwd",
+        "/etc/shadow",
+        "/etc/sudoers",
+        "/etc/ssh/"
     };
     
     for (const auto& pattern : sensitive_patterns) {
@@ -217,44 +229,69 @@ std::string InfoStealerDetector::GetDirectoryCategory(const std::string& path) {
         path.find("/chromium/") != std::string::npos) {
         return "Browser Data";
     }
+
     if (path.find("wallet") != std::string::npos || 
         path.find("/.electrum/") != std::string::npos ||
         path.find("/.exodus/") != std::string::npos) {
         return "Crypto Wallets";
     }
+
     if (path.find("/Documents/") != std::string::npos) return "Documents";
     if (path.find("/.aws/") != std::string::npos) return "AWS Credentials";
     if (path.find("/.docker/") != std::string::npos) return "Docker Config";
     if (path.find("/.kube/") != std::string::npos) return "Kubernetes Config";
-    
-    return "Sensitive Files";
+
+    if (path.find("/etc/passwd") != std::string::npos ||
+        path.find("/etc/shadow") != std::string::npos ||
+        path.find("/etc/sudoers") != std::string::npos) {
+        return "System Credentials";
+        }
+
+    if (path.find("/etc/ssh/") != std::string::npos) {
+        return "System SSH Config";
+    }
 }
 
 bool InfoStealerDetector::IsExfiltrationPattern(const ProcessActivity& activity) {
-    // Classic info stealer pattern: access sensitive files, then connect to network
-    
-    if (activity.sensitive_files_accessed.empty() || activity.network_connections.empty()) {
+
+    if (activity.file_accesses.empty() || activity.network_connections.empty()) {
         return false;
     }
-    
-    // Check if file access came before network activity
-    // TODO: track via exact timestamps
-    
-    // High confidence if:
-    // 1. Multiple sensitive files accessed
-    // 2. Followed by network connections
-    // 3. All within a short time window
-    
-    auto duration = std::chrono::duration_cast<std::chrono::minutes>(
-        activity.last_activity - activity.first_activity
-    );
-    
-    if (activity.sensitive_files_accessed.size() >= 2 && 
-        activity.network_connection_count >= 1 &&
-        duration.count() < 5) {  // Within 5 minutes
-        return true;
+
+    // Find the latest sensitive file access
+    std::chrono::system_clock::time_point last_sensitive_access;
+    bool found_sensitive = false;
+
+    for (const auto& access : activity.file_accesses) {
+        if (IsSensitiveDirectory(access.path)) {
+            if (!found_sensitive || access.timestamp > last_sensitive_access) {
+                last_sensitive_access = access.timestamp;
+                found_sensitive = true;
+            }
+        }
     }
-    
+
+    if (!found_sensitive) {
+        return false;
+    }
+
+    // Check if a network connection occurred AFTER sensitive access
+    for (const auto& conn : activity.network_connections) {
+        if (conn.timestamp > last_sensitive_access) {
+
+            auto delta = std::chrono::duration_cast<std::chrono::seconds>(
+                conn.timestamp - last_sensitive_access
+            );
+
+            // Exfil typically happens quickly
+            if (delta.count() <= 300) {  // 5 minutes
+                if (activity.sensitive_files_accessed.size() >= 2) {
+                    return true;
+                }
+            }
+        }
+    }
+
     return false;
 }
 
