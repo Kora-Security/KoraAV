@@ -13,7 +13,7 @@
 
 struct file_event {
     __u64 timestamp;
-    __u32 pid;
+    __u32 tgid;
     __u32 uid;
     __u32 flags;
     __u32 mode;
@@ -109,9 +109,9 @@ static __always_inline bool should_ignore_process(const char *comm) {
 }
 
 // Helper: Rate limit check
-static __always_inline bool check_rate_limit(__u32 pid) {
+static __always_inline bool check_rate_limit(__u32 tgid) {
     __u64 now = bpf_ktime_get_ns();
-    __u64 *last_time = bpf_map_lookup_elem(&rate_limit_map, &pid);
+    __u64 *last_time = bpf_map_lookup_elem(&rate_limit_map, &tgid);
     
     if (last_time) {
         // Only send event if enough time has passed
@@ -121,18 +121,20 @@ static __always_inline bool check_rate_limit(__u32 pid) {
     }
     
     // Update last event time
-    bpf_map_update_elem(&rate_limit_map, &pid, &now, BPF_ANY);
+    bpf_map_update_elem(&rate_limit_map, &tgid, &now, BPF_ANY);
     return true;
 }
 
 SEC("tracepoint/syscalls/sys_enter_openat")
 int trace_openat(struct trace_event_raw_sys_enter *ctx) {
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 pid = pid_tgid >> 32;
+    // __u64 tgid_tgid = bpf_get_current_tgid_tgid();
+    // __u32 tgid = tgid_tgid >> 32;
+    __u64 tgid_tgid = bpf_get_current_tgid_tgid();
+    __u32 tgid = tgid_tgid >> 32;
     __u32 uid = bpf_get_current_uid_gid() & 0xFFFFFFFF;
     
     // FILTER #1: Skip kernel threads (PID 0)
-    if (pid == 0) {
+    if (tgid == 0) {
         return 0;
     }
     
@@ -164,7 +166,7 @@ int trace_openat(struct trace_event_raw_sys_enter *ctx) {
     }
     
     // FILTER #4: Rate limiting per PID
-    if (!check_rate_limit(pid)) {
+    if (!check_rate_limit(tgid)) {
         return 0;
     }
     
@@ -181,7 +183,7 @@ int trace_openat(struct trace_event_raw_sys_enter *ctx) {
     }
     
     event->timestamp = bpf_ktime_get_ns();
-    event->pid = pid;
+    event->tgid = tgid;
     event->uid = uid;
     event->flags = (int)ctx->args[2];  // open flags
     event->mode = (int)ctx->args[3];   // mode
