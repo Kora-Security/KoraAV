@@ -13,6 +13,7 @@
 #include <thread>
 #include <string>
 #include <vector>
+#include <unordered_set>
 
 
 // Forward declarations for libbpf types
@@ -78,6 +79,14 @@ private:
     };
     
     Config config_;
+
+    struct ThreatRecord {
+        int last_score;
+        std::chrono::steady_clock::time_point last_seen;
+    };
+
+    std::unordered_map<std::string, ThreatRecord> reported_threats_;
+    std::mutex reported_threat_mutex_;
     
     // Detection engines
     std::unique_ptr<realtime::InfoStealerDetector> infostealer_detector_;
@@ -121,48 +130,57 @@ private:
     
     // Event processing threads
     std::thread ransomware_thread_;  // Ransomware detector (fanotify loop)
-    std::thread file_event_thread_;      // eBPF ring buffer poller (fast, no analysis)
-    std::thread process_event_thread_;   // eBPF ring buffer poller (fast, no analysis)
-    std::thread network_event_thread_;   // eBPF ring buffer poller (fast, no analysis)
-    std::thread file_analysis_thread_;   // Analyses queued file events (slow, heavy)
-    std::thread process_analysis_thread_;// Analyses queued process events
-    std::thread network_analysis_thread_;// Analyses queued network events
-    std::thread analysis_thread_;        // Periodic threat aggregation
+    std::thread file_event_thread_;
+    std::thread process_event_thread_;
+    std::thread network_event_thread_;
+    std::thread analysis_thread_;
     
-    // Event counters (for status logging)
+
+    std::thread file_analysis_thread_;
+    std::thread process_analysis_thread_;
+    std::thread network_analysis_thread_;
+
+
     std::atomic<uint64_t> file_events_received_{0};
     std::atomic<uint64_t> process_events_received_{0};
     std::atomic<uint64_t> network_events_received_{0};
     std::atomic<uint64_t> threats_detected_{0};
-    
+
+
     // Initialization
     bool LoadConfiguration(const std::string& config_path);
     bool LoadeBPFPrograms();
     bool AttacheBPFProbes();
+
+    bool IsThreatAlreadyHandled(uint32_t tgid, const std::string& threat_type);
+    void MarkThreatHandled(uint32_t tgid, const std::string& threat_type, int score);
+    void CleanupExpiredThreats(std::chrono::seconds expiration = std::chrono::minutes(10));
     
-    // Event processing - split into fast poller + slow analyser per channel
-    void ProcessFileEvents();       // Fast: drains eBPF ring buffer → queue
-    void AnalyzeFileEvents();       // Slow: analyses queued file events
-    void ProcessProcessEvents();    // Fast: drains eBPF ring buffer → queue
-    void AnalyzeProcessEvents();    // Slow: analyses queued process events
-    void ProcessNetworkEvents();    // Fast: drains eBPF ring buffer → queue
-    void AnalyzeNetworkEvents();    // Slow: analyses queued network events
-    void RunPeriodicAnalysis();     // Periodic threat aggregation + status
+    // Event processing (three separate monitoring threads)
+    void ProcessFileEvents();      // Monitors file access (InfoStealer detection)
+    void ProcessProcessEvents();   // Monitors process execution (ClickFix detection)
+    void ProcessNetworkEvents();   // Monitors network connections (C2 detection)
+    void AnalyzeFileEvents();
+    void AnalyzeProcessEvents();
+    void AnalyzeNetworkEvents();
+    void RunPeriodicAnalysis();
+
     
     // Threat response
-    void HandleThreat(uint32_t pid, const std::string& threat_type, 
+    void HandleThreat(uint32_t tgid, const std::string& threat_type,
                      int score, const std::vector<std::string>& indicators);
-    void KillProcess(uint32_t pid);
-    void BlockProcessNetwork(uint32_t pid);
+    void KillProcess(uint32_t tgid);
+    void BlockProcessNetwork(uint32_t tgid);
     void LockdownSystem();
-    void LogThreat(uint32_t pid, const std::string& threat_type, 
+    void LogThreat(uint32_t tgid, const std::string& threat_type,
                    int score, const std::vector<std::string>& indicators);
     
     // Helper functions
     bool SetSecureBits();
     bool IsSensitiveFile(const std::string& path);
-    std::string GetProcessName(uint32_t pid);
-    std::string GetProcessCommandLine(uint32_t pid);
+    std::string GetProcessName(uint32_t tgid);
+    std::string GetProcessCommandLine(uint32_t tgid);
+    uint64_t GetProcessStartTime(uint32_t tgid);
 };
 
 } // namespace daemon
