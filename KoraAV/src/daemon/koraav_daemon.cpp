@@ -21,6 +21,8 @@
 #include <queue>
 #include <mutex>
 #include <condition_variable>
+#include <unordered_set>
+#include <chrono>
 
 namespace koraav {
 namespace daemon {
@@ -38,6 +40,7 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         if (queue_.size() < MAX_QUEUE_SIZE) {
             queue_.push(event);
+            ++queue_size_;
             cv_.notify_one();
         }
         // If full, silently drop - better than blocking
@@ -55,6 +58,7 @@ public:
         }
         event = queue_.front();
         queue_.pop();
+        --queue_size_;
         return true;
     }
 
@@ -65,8 +69,11 @@ public:
     }
 
     bool Empty() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return queue_.empty();
+        return queue_size_ == 0;
+    }
+
+    size_t Size() const {
+        return queue_size_;
     }
 
 private:
@@ -75,12 +82,13 @@ private:
     std::mutex mutex_;
     std::condition_variable cv_;
     bool stopped_ = false;
+    std::atomic<size_t> queue_size_{0};
 };
 
 // Event structs (mirror the eBPF structs exactly)
 struct FileEventData {
     uint64_t timestamp;
-    uint32_t pid;
+    uint32_t tgid;
     uint32_t uid;
     uint32_t flags;
     uint32_t mode;
@@ -90,8 +98,8 @@ struct FileEventData {
 
 struct ProcessEventData {
     uint64_t timestamp;
-    uint32_t pid;
-    uint32_t ppid;
+    uint32_t tgid;
+    uint32_t ptgid;
     uint32_t uid;
     char comm[16];
     char cmdline[256];
@@ -99,7 +107,7 @@ struct ProcessEventData {
 
 struct NetworkEventData {
     uint64_t timestamp;
-    uint32_t pid;
+    uint32_t tgid;
     uint32_t uid;
     uint32_t saddr;
     uint32_t daddr;
@@ -803,12 +811,12 @@ void KoraAVDaemon::AnalyzeFileEvents() {
         std::string filename(evt.filename, strnlen(evt.filename, sizeof(evt.filename)));
         std::string proc_name(evt.comm, strnlen(evt.comm, sizeof(evt.comm)));
 
-        if (filename.empty() || evt.pid == 0) continue;
+        if (filename.empty() || evt.tgid == 0) continue;
 
         // DEBUG: Log first 20 events to see what's happening
         if (++event_count <= 20) {
             std::cout << "[DEBUG AnalyzeFile " << event_count << "] File: " << filename 
-                      << " | PID: " << evt.pid << " | Proc: " << proc_name << std::endl;
+                      << " | PID: " << evt.tgid << " | Proc: " << proc_name << std::endl;
         }
 
         // InfoStealer analysis
@@ -821,21 +829,21 @@ void KoraAVDaemon::AnalyzeFileEvents() {
         
         if (infostealer_detector_ && is_sensitive) {
             if (event_count <= 20) {
-                std::cout << "[DEBUG] ✓ Tracking file access for PID " << evt.pid << std::endl;
+                std::cout << "[DEBUG] ✓ Tracking file access for PID " << evt.tgid << std::endl;
             }
             
-            infostealer_detector_->TrackFileAccess(evt.pid, filename);
-            int score = infostealer_detector_->AnalyzeProcess(evt.pid);
+            infostealer_detector_->TrackFileAccess(evt.tgid, filename);
+            int score = infostealer_detector_->AnalyzeProcess(evt.tgid);
 
             if (event_count <= 20 || score > 0) {
-                std::cout << "[DEBUG] InfoStealer score for PID " << evt.pid << ": " << score 
+                std::cout << "[DEBUG] InfoStealer score for PID " << evt.tgid << ": " << score
                           << " (threshold: " << config_.alert_threshold << ")" << std::endl;
             }
 
             if (score >= config_.alert_threshold) {
-                auto indicators = infostealer_detector_->GetThreatIndicators(evt.pid);
+                auto indicators = infostealer_detector_->GetThreatIndicators(evt.tgid);
                 threats_detected_++;
-                HandleThreat(evt.pid, "InfoStealer", score, indicators);
+                HandleThreat(evt.tgid, "InfoStealer", score, indicators);
             }
         }
     }
@@ -892,10 +900,10 @@ void KoraAVDaemon::AnalyzeProcessEvents() {
     while (running_ || !g_process_event_queue.Empty()) {
         if (!g_process_event_queue.Pop(evt, 200)) continue;
 
-        if (evt.pid == 0) continue;
+        if (evt.tgid == 0) continue;
 
         // Read full cmdline from /proc (OK to do here in analysis thread)
-        std::string cmdline = GetProcessCommandLine(evt.pid);
+        std::string cmdline = GetProcessCommandLine(evt.tgid);
         std::string proc_name(evt.comm, strnlen(evt.comm, sizeof(evt.comm)));
 
         if (cmdline.empty() && proc_name.empty()) continue;
@@ -905,13 +913,13 @@ void KoraAVDaemon::AnalyzeProcessEvents() {
             std::string to_analyze = cmdline.empty() ? proc_name : cmdline;
             int score = clickfix_detector_->AnalyzeCommand(to_analyze, proc_name);
 
-            if (score >= config_.alert_threshold) {
+            if (score >= 50) {
                 auto indicators = clickfix_detector_->GetThreatIndicators(to_analyze);
+                std::cout << "🚨 ClickFix detected malicious command: "
+                    << proc_name << " → " << to_analyze
+                    << " (score: " << score << ")" << std::endl;
                 threats_detected_++;
-                HandleThreat(evt.pid, "ClickFix", score, indicators);
-            } else if (score >= 50) {
-                std::cout << "⚠ Suspicious process (score " << score << "): "
-                          << proc_name << " → " << to_analyze << std::endl;
+                HandleThreat(evt.tgid, "ClickFix", score, indicators);
             }
         }
     }
@@ -968,23 +976,31 @@ void KoraAVDaemon::AnalyzeNetworkEvents() {
     while (running_ || !g_network_event_queue.Empty()) {
         if (!g_network_event_queue.Pop(evt, 200)) continue;
 
-        if (evt.pid == 0 || evt.daddr == 0) continue;
+        if (evt.tgid == 0 || evt.daddr == 0) continue;
 
         // C2 analysis
         if (c2_detector_) {
-            c2_detector_->TrackConnection(evt.pid, evt.daddr, evt.dport);
-            int score = c2_detector_->AnalyzeProcess(evt.pid);
+            c2_detector_->TrackConnection(evt.tgid, evt.daddr, evt.dport);
+            int score = c2_detector_->AnalyzeProcess(evt.tgid);
 
             if (score >= config_.alert_threshold) {
-                auto indicators = c2_detector_->GetThreatIndicators(evt.pid);
+                auto indicators = c2_detector_->GetThreatIndicators(evt.tgid);
                 threats_detected_++;
-                HandleThreat(evt.pid, "C2_Communication", score, indicators);
+                HandleThreat(evt.tgid, "C2_Communication", score, indicators);
             }
         }
 
         // InfoStealer exfil tracking
         if (infostealer_detector_) {
-            infostealer_detector_->TrackNetworkConnection(evt.pid, evt.daddr, evt.dport);
+            infostealer_detector_->TrackNetworkConnection(evt.tgid, evt.daddr, evt.dport);
+
+            int score = infostealer_detector_->AnalyzeProcess(evt.tgid);
+
+            if (score >= config_.alert_threshold) {
+                auto indicators = infostealer_detector_->GetThreatIndicators(evt.tgid);
+                threats_detected_++;
+                HandleThreat(evt.tgid, "InfoStealer", score, indicators);
+            }
         }
     }
 }
@@ -1006,34 +1022,35 @@ void KoraAVDaemon::RunPeriodicAnalysis() {
                       << "  Network: " << network_events_received_.load()
                       << "  Threats: " << threats_detected_.load()
                       << std::endl;
+            CleanupExpiredThreats();
         }
 
         // ── Ransomware: check confirmed threats ──────────────────────────────
-        if (ransomware_detector_) {
-            auto suspicious = ransomware_detector_->GetSuspiciousProcesses();
-            for (const auto& proc : suspicious) {
-                if (proc.is_confirmed_ransomware) {
-                    std::vector<std::string> indicators;
-                    for (const auto& file : proc.targeted_files) {
-                        indicators.push_back("Encrypted: " + file);
-                    }
-                    int score = std::min(100, 60 + proc.encryption_attempts * 10
-                                              + (proc.files_targeted >= 5 ? 25 : 0));
-                    threats_detected_++;
-                    HandleThreat(proc.pid, "Ransomware", score, indicators);
-                }
-            }
-        }
+        // if (ransomware_detector_) {
+        //     auto suspicious = ransomware_detector_->GetSuspiciousProcesses();
+        //     for (const auto& proc : suspicious) {
+        //         if (proc.is_confirmed_ransomware) {
+        //             std::vector<std::string> indicators;
+        //             for (const auto& file : proc.targeted_files) {
+        //                 indicators.push_back("Encrypted: " + file);
+        //             }
+        //             int score = std::min(100, 60 + proc.encryption_attempts * 10
+        //                                       + (proc.files_targeted >= 5 ? 25 : 0));
+        //             threats_detected_++;
+        //             HandleThreat(proc.pid, "Ransomware", score, indicators);
+        //         }
+        //     }
+        // }
 
         // ── InfoStealer: check accumulated scores ────────────────────────────
         if (infostealer_detector_) {
             auto suspicious_pids = infostealer_detector_->GetSuspiciousProcesses(70);
-            for (const auto& pid : suspicious_pids) {
-                int score = infostealer_detector_->AnalyzeProcess(pid);
+            for (const auto& tgid : suspicious_pids) {
+                int score = infostealer_detector_->AnalyzeProcess(tgid);
                 if (score >= config_.block_threshold) {
-                    auto indicators = infostealer_detector_->GetThreatIndicators(pid);
+                    auto indicators = infostealer_detector_->GetThreatIndicators(tgid);
                     threats_detected_++;
-                    HandleThreat(pid, "InfoStealer", score, indicators);
+                    HandleThreat(tgid, "InfoStealer", score, indicators);
                 }
             }
         }
@@ -1041,12 +1058,12 @@ void KoraAVDaemon::RunPeriodicAnalysis() {
         // ── C2: check accumulated scores ─────────────────────────────────────
         if (c2_detector_) {
             auto suspicious_pids = c2_detector_->GetSuspiciousProcesses(70);
-            for (const auto& pid : suspicious_pids) {
-                int score = c2_detector_->AnalyzeProcess(pid);
+            for (const auto& tgid : suspicious_pids) {
+                int score = c2_detector_->AnalyzeProcess(tgid);
                 if (score >= config_.alert_threshold) {
-                    auto indicators = c2_detector_->GetThreatIndicators(pid);
+                    auto indicators = c2_detector_->GetThreatIndicators(tgid);
                     threats_detected_++;
-                    HandleThreat(pid, "C2_Communication", score, indicators);
+                    HandleThreat(tgid, "C2_Communication", score, indicators);
                 }
             }
         }
@@ -1055,18 +1072,26 @@ void KoraAVDaemon::RunPeriodicAnalysis() {
     std::cout << "Periodic analysis thread stopped" << std::endl;
 }
 
-void KoraAVDaemon::HandleThreat(uint32_t pid, const std::string& threat_type,
+void KoraAVDaemon::HandleThreat(uint32_t tgid, const std::string& threat_type,
                                 int score, const std::vector<std::string>& indicators) {
+
+
+    if (IsThreatAlreadyHandled(tgid, threat_type)) {
+        return;
+    }
+
+    MarkThreatHandled(tgid, threat_type, score);
+
     // Log the threat first
-    LogThreat(pid, threat_type, score, indicators);
+    LogThreat(tgid, threat_type, score, indicators);
     
     // Get process info for notification
-    std::string process_name = GetProcessName(pid);
-    std::string process_cmd = GetProcessCommandLine(pid);
+    std::string process_name = GetProcessName(tgid);
+    std::string process_cmd = GetProcessCommandLine(tgid);
     
     // Send desktop notification FIRST (before console output)
     if (notification_manager_) {
-        notification_manager_->SendThreatAlert(threat_type, process_name, pid, score, indicators);
+        notification_manager_->SendThreatAlert(threat_type, process_name, tgid, score, indicators);
     }
     
     // Display threat notification (console)
@@ -1076,7 +1101,7 @@ void KoraAVDaemon::HandleThreat(uint32_t pid, const std::string& threat_type,
     std::cout << "═══════════════════════════════════════════════════════════" << std::endl;
     std::cout << "Type:         " << threat_type << std::endl;
     std::cout << "Threat Score: " << score << "/100" << std::endl;
-    std::cout << "Process:      " << process_name << " (PID " << pid << ")" << std::endl;
+    std::cout << "Process:      " << process_name << " (PID " << tgid << ")" << std::endl;
     if (!process_cmd.empty()) {
         std::cout << "Command:      " << process_cmd << std::endl;
     }
@@ -1093,11 +1118,11 @@ void KoraAVDaemon::HandleThreat(uint32_t pid, const std::string& threat_type,
         std::cout << "═══════════════════════════════════════════════════════════\n" << std::endl;
         
         // Kill process first
-        KillProcess(pid);
+        KillProcess(tgid);
         
         // Quarantine
         if (quarantine_manager_) {
-            std::string quarantine_path = quarantine_manager_->QuarantineProcess(pid, threat_type);
+            std::string quarantine_path = quarantine_manager_->QuarantineProcess(tgid, threat_type);
             if (!quarantine_path.empty()) {
                 std::cout << "✓ Malware quarantined to: " << quarantine_path << std::endl;
                 if (notification_manager_) {
@@ -1121,17 +1146,17 @@ void KoraAVDaemon::HandleThreat(uint32_t pid, const std::string& threat_type,
         
         // Block network if configured
         if (config_.auto_block_network) {
-            BlockProcessNetwork(pid);
+            BlockProcessNetwork(tgid);
         }
         
         // Kill process
         if (config_.auto_kill) {
-            KillProcess(pid);
+            KillProcess(tgid);
         }
         
         // Quarantine the malware
         if (quarantine_manager_) {
-            std::string quarantine_path = quarantine_manager_->QuarantineProcess(pid, threat_type);
+            std::string quarantine_path = quarantine_manager_->QuarantineProcess(tgid, threat_type);
             if (!quarantine_path.empty()) {
                 std::cout << "✓ Malware quarantined to: " << quarantine_path << std::endl;
                 if (notification_manager_) {
@@ -1152,20 +1177,20 @@ void KoraAVDaemon::HandleThreat(uint32_t pid, const std::string& threat_type,
     std::cout << std::endl;
 }
 
-void KoraAVDaemon::KillProcess(uint32_t pid) {
-    std::cout << "  → Killing malicious process PID " << pid << " (" << GetProcessName(pid) << ")" << std::endl;
-    kill(pid, SIGKILL);
+void KoraAVDaemon::KillProcess(uint32_t tgid) {
+    std::cout << "  → Killing malicious process PID " << tgid << " (" << GetProcessName(tgid) << ")" << std::endl;
+    kill(tgid, SIGKILL);
 }
 
-void KoraAVDaemon::BlockProcessNetwork(uint32_t pid) {
-    std::cout << "  → Blocking network for PID " << pid << std::endl;
+void KoraAVDaemon::BlockProcessNetwork(uint32_t tgid) {
+    std::cout << "  → Blocking network for PID " << tgid << std::endl;
     
     // Use nftables to block process
-    std::string cmd = "nft add rule inet filter output meta skuid " + std::to_string(pid) + " drop 2>/dev/null";
+    std::string cmd = "nft add rule inet filter output meta skuid " + std::to_string(tgid) + " drop 2>/dev/null";
     system(cmd.c_str());
     
     // Fallback to iptables
-    cmd = "iptables -A OUTPUT -m owner --pid-owner " + std::to_string(pid) + " -j DROP 2>/dev/null";
+    cmd = "iptables -A OUTPUT -m owner --pid-owner " + std::to_string(tgid) + " -j DROP 2>/dev/null";
     system(cmd.c_str());
 }
 
@@ -1186,7 +1211,7 @@ void KoraAVDaemon::LockdownSystem() {
     std::cout << "🔒 SYSTEM LOCKED - Use 'koraav unlock --all' to restore" << std::endl;
 }
 
-void KoraAVDaemon::LogThreat(uint32_t pid, const std::string& threat_type,
+void KoraAVDaemon::LogThreat(uint32_t tgid, const std::string& threat_type,
                              int score, const std::vector<std::string>& indicators) {
     // Create log directory if it doesn't exist
     system(("mkdir -p " + config_.log_path).c_str());
@@ -1200,11 +1225,11 @@ void KoraAVDaemon::LogThreat(uint32_t pid, const std::string& threat_type,
     strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", localtime(&now_c));
     
     log << "[" << time_buf << "] ";
-    log << "PID=" << pid << " ";
+    log << "PID=" << tgid << " ";
     log << "Type=" << threat_type << " ";
     log << "Score=" << score << " ";
-    log << "Process=" << GetProcessName(pid) << " ";
-    log << "CMD=" << GetProcessCommandLine(pid) << " ";
+    log << "Process=" << GetProcessName(tgid) << " ";
+    log << "CMD=" << GetProcessCommandLine(tgid) << " ";
     log << "Indicators: ";
     for (const auto& ind : indicators) {
         log << ind << "; ";
@@ -1212,8 +1237,8 @@ void KoraAVDaemon::LogThreat(uint32_t pid, const std::string& threat_type,
     log << std::endl;
 }
 
-std::string KoraAVDaemon::GetProcessName(uint32_t pid) {
-    std::string comm_path = "/proc/" + std::to_string(pid) + "/comm";
+std::string KoraAVDaemon::GetProcessName(uint32_t tgid) {
+    std::string comm_path = "/proc/" + std::to_string(tgid) + "/comm";
     std::ifstream file(comm_path);
     std::string name;
     if (file) {
@@ -1222,8 +1247,8 @@ std::string KoraAVDaemon::GetProcessName(uint32_t pid) {
     return name.empty() ? "unknown" : name;
 }
 
-std::string KoraAVDaemon::GetProcessCommandLine(uint32_t pid) {
-    std::string cmdline_path = "/proc/" + std::to_string(pid) + "/cmdline";
+std::string KoraAVDaemon::GetProcessCommandLine(uint32_t tgid) {
+    std::string cmdline_path = "/proc/" + std::to_string(tgid) + "/cmdline";
     std::ifstream file(cmdline_path);
     std::string cmdline;
     if (file) {
@@ -1231,6 +1256,59 @@ std::string KoraAVDaemon::GetProcessCommandLine(uint32_t pid) {
     }
     return cmdline.empty() ? "" : cmdline;
 }
+
+
+
+bool KoraAVDaemon::IsThreatAlreadyHandled(uint32_t tgid, const std::string& threat_type) {
+    std::lock_guard<std::mutex> lock(reported_threat_mutex_);
+    uint64_t starttime = GetProcessStartTime(tgid);
+    std::string key = std::to_string(tgid) + ":" + threat_type + ":" + std::to_string(starttime);
+    return reported_threats_.find(key) != reported_threats_.end();
+}
+
+void KoraAVDaemon::MarkThreatHandled(uint32_t tgid, const std::string& threat_type, int score) {
+    std::lock_guard<std::mutex> lock(reported_threat_mutex_);
+    uint64_t starttime = GetProcessStartTime(tgid);
+    std::string key = std::to_string(tgid) + ":" + threat_type + ":" + std::to_string(starttime);
+    auto it = reported_threats_.find(key);
+    if (it != reported_threats_.end()) {
+        it->second.last_score = std::max(it->second.last_score, score);
+        it->second.last_seen = std::chrono::steady_clock::now();
+    } else {
+        reported_threats_[key] = {score, std::chrono::steady_clock::now()};
+    }
+}
+
+
+void KoraAVDaemon::CleanupExpiredThreats(std::chrono::seconds expiration) {
+    std::lock_guard<std::mutex> lock(reported_threat_mutex_);
+    auto now = std::chrono::steady_clock::now();
+
+    for (auto it = reported_threats_.begin(); it != reported_threats_.end(); ) {
+        if (now - it->second.last_seen > expiration) {
+            it = reported_threats_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+
+uint64_t KoraAVDaemon::GetProcessStartTime(uint32_t tgid) {
+    std::string stat_path = "/proc/" + std::to_string(tgid) + "/stat";
+    std::ifstream file(stat_path);
+    if (!file) return 0;
+    std::string line;
+    std::getline(file, line);
+    std::istringstream iss(line);
+    std::string tmp;
+    uint64_t starttime = 0;
+    for (int i = 0; i < 22; ++i) iss >> tmp; // skip fields
+    iss >> starttime;
+    return starttime;
+}
+
+
 
 } // namespace daemon
 } // namespace koraav
