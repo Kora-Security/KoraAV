@@ -84,7 +84,7 @@ __ __
 - **Network monitoring** - Detect suspicious connections and data exfiltration
 
 ### Behavioral detection engines:
-- **Ransomware Detector** - Pre-encryption interception, mass file operation tracking
+- **Ransomware Detector** - File operation tracking and behavior monitoring.
 - **InfoStealer Detector** - Monitors what's accessing browser data, credentials, cryptocurrency wallets, etc.
 - **ClickFix Detector** - Detects clipboard hijacking and social engineering attacks by looking at what you paste into terminals.
 - **C2 Detector** - Looks for and monitors a basic implementation of C2 behaviors.
