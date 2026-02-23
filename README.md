@@ -94,6 +94,7 @@ __ __
 - **Automatic threat neutralization** - Kill malicious processes instantly
 - **Network isolation** - Block network access for suspicious processes - (Prevent data exfiltration)
 - **System lockdown** - Read-only filesystem + network block for critical threats - (prevent data encryption if all else fails)
+    > Over kill and is optional and off by default.
 - **Detailed logging** - Complete audit trail of all threats and actions
 
 
@@ -192,9 +193,6 @@ koraav rules list
 
 # Add custom rule
 sudo koraav rules add new-malware.yar
-
-# Update rules from online sources
-sudo koraav rules update
 ```
 
 ### Manage Hash Database
@@ -229,7 +227,7 @@ __ __
 <br>
 
 ## Architecture
-
+> Placeholder
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                         User Space                          │
@@ -261,41 +259,6 @@ __ __
 │  └── network_monitor.bpf.o → Tracepoints: connect, send     │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
-```
-__ __
-
-<br>
-
-## Configuration
-
-KoraAV's config file is stored at `/etc/koraav/koraav.conf`:
-
-```ini
-[scanning]
-enable_yara_scan = true
-enable_heuristic_scan = true
-max_file_size = 104857600  # 100MB
-thread_count = 4
-
-[realtime]
-detect_ransomware = true
-detect_infostealer = true
-detect_clickfix = true
-
-[thresholds]
-alert_threshold = 61   # When to be alerted
-block_threshold = 81   # Kill process + block network
-lockdown_threshold = 96  # System lockdown
-
-[response]
-auto_kill = true
-auto_block_network = true
-auto_lockdown = false  # Require manual confirmation if false
-```
-
-After editing, reload the daemon:
-```bash
-sudo systemctl reload korad
 ```
 __ __
 
