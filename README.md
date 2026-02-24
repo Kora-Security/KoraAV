@@ -49,8 +49,8 @@ __ __
 - [ ] Work on having less false positives and improve scanning detection.
 - [ ] RootKit, Cryptominer, and Backdoor detection. (and worms, but that isn't exactly high priority rn)
 - [ ] An update system for when a new release is available.
-    > Eventually have 50+ behavior detections + ML detection like CrowdStrike has.
 __ __
+> Eventually have 50+ behavior detections + ML detection like CrowdStrike has.
 
 <br>
 
