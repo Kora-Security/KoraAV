@@ -39,13 +39,17 @@ __ __
 ## ToDo
 > Placeholders
 
+- [ ] Update threat intelligence feeds (file hashes and IP stuff for proactive detections. Maybe tap into clamAV's hashes, etc.)
+- [ ] Tune C2 detector and work on having less false positives.
+- [ ] Add ML models for novel variant detection.
 - [ ] Make and add default yara files & work on yara system to handle crashing on error.
 - [ ] Write tests for features and functions.
 - [ ] Optimize and make faster when scanning.
 - [ ] Make progress bar look fancier and actually good looking when scanning.
 - [ ] Work on having less false positives and improve scanning detection.
-- [ ] RootKit detection.
+- [ ] RootKit, Cryptominer, and Backdoor detection. (and worms, but that isn't exactly high priority rn)
 - [ ] An update system for when a new release is available.
+    > Eventually have 50+ behavior detections + ML detection like CrowdStrike has.
 __ __
 
 <br>
