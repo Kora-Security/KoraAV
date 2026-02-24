@@ -20,7 +20,6 @@ Usage:
   koraav-rules list                         List all active YARA rules
   koraav-rules validate <rule-file>         Validate YARA rule syntax
   koraav-rules reload                       Reload all YARA rules (restart daemon)
-  koraav-rules update                       Update YARA rules from online sources
   koraav-rules info <rule-name>             Show YARA rule details
 
 Examples:
@@ -29,9 +28,6 @@ Examples:
 
   # Add your own custom rule
   sudo koraav-rules add my-malware.yar
-  
-  # Update to latest signatures
-  sudo koraav-rules update
   
   # List all rules
   koraav-rules list
@@ -239,56 +235,58 @@ bool reload_rules() {
     }
 }
 
-bool update_rules() {
-    if (geteuid() != 0) {
-        std::cerr << "Error: Updating rules requires root privileges" << std::endl;
-        return false;
-    }
-    
-    std::cout << "Updating YARA rules from online sources..." << std::endl;
-    std::cout << std::endl;
-    
-    // Update from GitHub repositories
-    // TODO: Parse repo files, look for "Linux.", add to list, and then add yara files from list to "linux_public_extended.yar"
-    // For now, we'll just use this one as a placeholder until I add more sources, etc.
-    std::vector<std::pair<std::string, std::string>> sources = {
-        {"https://raw.githubusercontent.com/reversinglabs/reversinglabs-yara-rules/refs/heads/develop/yara/ransomware/Linux.Ransomware.Helldown.yara",
-         "linux_public_extended.yar"}
-    };
-    
-    std::string rules_dir = "/opt/koraav/share/signatures/yara-rules";
-    bool success = true;
-    
-    for (const auto& [url, filename] : sources) {
-        std::cout << "Downloading: " << filename << "..." << std::endl;
-        
-        std::string cmd = "curl -sSL '" + url + "' -o '" + rules_dir + "/" + filename + "' 2>&1";
-        int result = system(cmd.c_str());
-        
-        if (result == 0) {
-            // Validate downloaded rule
-            if (validate_rule(rules_dir + "/" + filename)) {
-                std::cout << filename << " updated!" << std::endl;
-            } else {
-                std::cerr << filename << " validation failed, removing.." << std::endl;
-                fs::remove(rules_dir + "/" + filename);
-                success = false;
-            }
-        } else {
-            std::cerr << "Failed to download " << filename << std::endl;
-            success = false;
-        }
-    }
-    
-    if (success) {
-        std::cout << std::endl;
-        std::cout << "Rules updated successfully" << std::endl;
-        std::cout << "Reloading..." << std::endl;
-        reload_rules();
-    }
-    
-    return success;
-}
+
+// Idk what to do with this currently. since we just let user's add their own rules, etc.
+// bool update_rules() {
+//     if (geteuid() != 0) {
+//         std::cerr << "Error: Updating rules requires root privileges" << std::endl;
+//         return false;
+//     }
+//
+//     std::cout << "Updating YARA rules from online sources..." << std::endl;
+//     std::cout << std::endl;
+//
+//     // Update from GitHub repositories
+//     // TODO: Parse repo files, look for "Linux.", add to list, and then add yara files from list to "linux_public_extended.yar"
+//     // For now, we'll just use this one as a placeholder until I add more sources, etc.
+//     std::vector<std::pair<std::string, std::string>> sources = {
+//         {"https://raw.githubusercontent.com/reversinglabs/reversinglabs-yara-rules/refs/heads/develop/yara/ransomware/Linux.Ransomware.Helldown.yara",
+//          "linux_public_extended.yar"}
+//     };
+//
+//     std::string rules_dir = "/opt/koraav/share/signatures/yara-rules";
+//     bool success = true;
+//
+//     for (const auto& [url, filename] : sources) {
+//         std::cout << "Downloading: " << filename << "..." << std::endl;
+//
+//         std::string cmd = "curl -sSL '" + url + "' -o '" + rules_dir + "/" + filename + "' 2>&1";
+//         int result = system(cmd.c_str());
+//
+//         if (result == 0) {
+//             // Validate downloaded rule
+//             if (validate_rule(rules_dir + "/" + filename)) {
+//                 std::cout << filename << " updated!" << std::endl;
+//             } else {
+//                 std::cerr << filename << " validation failed, removing.." << std::endl;
+//                 fs::remove(rules_dir + "/" + filename);
+//                 success = false;
+//             }
+//         } else {
+//             std::cerr << "Failed to download " << filename << std::endl;
+//             success = false;
+//         }
+//     }
+//
+//     if (success) {
+//         std::cout << std::endl;
+//         std::cout << "Rules updated successfully" << std::endl;
+//         std::cout << "Reloading..." << std::endl;
+//         reload_rules();
+//     }
+//
+//     return success;
+// }
 
 int main(int argc, char** argv) {
     if (argc < 2) {
@@ -326,9 +324,6 @@ int main(int argc, char** argv) {
     }
     else if (command == "reload") {
         return reload_rules() ? 0 : 1;
-    }
-    else if (command == "update") {
-        return update_rules() ? 0 : 1;
     }
     else if (command == "info") {
         if (argc < 3) {

@@ -50,7 +50,41 @@ void InfoStealerDetector::TrackNetworkConnection(
     activity.network_connection_count++;
 
     activity.network_connections.push_back({dest_ip, dest_port, now});
+    // ═══════════════════════════════════════════════════════════
+    // WEBHOOK DETECTION (Discord, Slack, Telegram, etc.)
+    // ═══════════════════════════════════════════════════════════
+
+    // Webhooks typically use HTTPS (port 443) or HTTP (port 80)
+    if (dest_port == 443 || dest_port == 80) {
+        // Common webhook IPs (you can expand this list):
+        // Discord: 162.159.x.x (Cloudflare CDN)
+        // Slack: Various AWS IPs
+        // Telegram: 149.154.x.x, 91.108.x.x
+
+        uint8_t first_octet = dest_ip & 0xFF;
+        uint8_t second_octet = (dest_ip >> 8) & 0xFF;
+
+        // Discord/Cloudflare range
+        if (first_octet == 162 && second_octet == 159) {
+            activity.webhook_detected = true;
+        }
+        // Telegram ranges
+        else if (first_octet == 149 && second_octet == 154) {
+            activity.webhook_detected = true;
+        }
+        else if (first_octet == 91 && second_octet == 108) {
+            activity.webhook_detected = true;
+        }
+
+        // Track HTTPS connections after file access (potential exfil via webhook)
+        if (activity.file_access_count > 0 && dest_port == 443) {
+            activity.https_connections_after_files++;
+        }
+    }
 }
+
+
+
 
 int InfoStealerDetector::AnalyzeProcess(uint32_t pid) {
     auto it = process_activities_.find(pid);
@@ -133,6 +167,17 @@ std::vector<std::string> InfoStealerDetector::GetThreatIndicators(uint32_t pid) 
         oss << "Made " << activity.network_connection_count << " network connection(s)";
         indicators.push_back(oss.str());
     }
+
+
+    if (activity.webhook_detected) {
+        indicators.push_back("WEBHOOK DETECTED: Likely exfiltration via Discord/Slack/Telegram");
+    }
+
+    if (activity.https_connections_after_files > 0) {
+        std::ostringstream oss;
+        oss << "HTTPS connections after file access: " << activity.https_connections_after_files;
+        indicators.push_back(oss.str());
+    }
     
     // Exfiltration pattern
     if (IsExfiltrationPattern(activity)) {
@@ -179,6 +224,14 @@ int InfoStealerDetector::CalculateSensitivityScore(const ProcessActivity& activi
     
     // Bonus for multiple categories
     score += activity.sensitive_directories.size() * 15;
+
+    if (activity.webhook_detected && activity.file_access_count > 0) {
+        score += 40;  // Webhook + file access = likely exfil
+    }
+
+    if (activity.https_connections_after_files >= 3) {
+        score += 25;  // Multiple HTTPS connections after file access
+    }
     
     return score;
 }
@@ -250,8 +303,7 @@ std::string InfoStealerDetector::GetDirectoryCategory(const std::string& path) {
     if (path.find("/etc/ssh/") != std::string::npos) {
         return "System SSH Config";
     }
-
-    return ""; // Removes compiler warning/error
+    return "";
 }
 
 bool InfoStealerDetector::IsExfiltrationPattern(const ProcessActivity& activity) {

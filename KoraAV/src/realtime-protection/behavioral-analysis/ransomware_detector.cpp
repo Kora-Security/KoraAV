@@ -1,582 +1,771 @@
-// src/realtime-protection/behavioral-analysis/ransomware_detector.cpp
+// src/realtime-protection/behavioral-analysis/ransomware_detector_v2.cpp
+// Modern Behavioral Ransomware Detection - Implementation
 #include "ransomware_detector.h"
-#include <sys/fanotify.h>
-#include <poll.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <signal.h>
-#include <limits.h>
-#include <cstring>
-#include <cmath>
-#include <iostream>
-#include <sstream>
 #include <algorithm>
-#include <chrono>
+#include <array>
+#include <sstream>
+#include <fstream>
+#include <iostream>
+#include <cmath>
 #include <iomanip>
-#include <fnmatch.h>
 #include <filesystem>
-
-namespace fs = std::filesystem;
 
 namespace koraav {
 namespace realtime {
 
-RansomwareDetector::RansomwareDetector() 
-    : fanotify_fd_(-1), running_(false) {
-    // Initialize statistics
-    stats_.files_checked = 0;
-    stats_.encryption_attempts_blocked = 0;
-    stats_.processes_killed = 0;
-    stats_.whitelisted_operations = 0;
-    stats_.false_positives_prevented = 0;
+RansomwareDetector::RansomwareDetector() {
+    InitializeWhitelist();
 }
 
 RansomwareDetector::~RansomwareDetector() {
-    Stop();
-    if (incident_log_.is_open()) {
-        incident_log_.close();
-    }
+    // Cleanup
 }
 
-bool RansomwareDetector::Initialize(const std::vector<std::string>& protected_paths) {
-    // Open incident log
-    fs::create_directories("/opt/koraav/var/logs");
-    incident_log_.open("/opt/koraav/var/logs/ransomware-incidents.log", 
-                      std::ios::app);
-    if (!incident_log_) {
-        std::cerr << "Warning: Could not open incident log file" << std::endl;
-    }
-    
-    // Initialize YARA scanner
-    yara_scanner_ = std::make_unique<RealtimeYaraScanner>();
-    if (yara_scanner_->Initialize("/opt/koraav/share/signatures/yara-rules")) {
-        std::cout << "Real-time YARA scanning enabled" << std::endl;
-    } else {
-        std::cerr << "Warning: YARA scanning disabled (rules not found)" << std::endl;
-    }
-    
-    // Create fanotify instance - NOTIFICATION ONLY (not permission events).
-    // FAN_CLASS_CONTENT with FAN_OPEN_PERM requires the daemon to explicitly
-    // allow/deny every file open on the monitored mounts. If the daemon falls
-    // behind, the entire filesystem stalls and the VM freezes.
-    // FAN_CLASS_NOTIF is non-blocking: we observe and react after the fact.
-    fanotify_fd_ = fanotify_init(
-        FAN_CLASS_NOTIF | FAN_UNLIMITED_QUEUE | FAN_UNLIMITED_MARKS,
-        O_RDONLY | O_LARGEFILE | O_NONBLOCK
-    );
-    
-    if (fanotify_fd_ < 0) {
-        std::cerr << "Failed to initialize fanotify: " << strerror(errno) << std::endl;
-        return false;
-    }
-    
-    // Mark directories - MODIFY and CLOSE_WRITE only, no permission events.
-    for (const auto& path : protected_paths) {
-        int ret = fanotify_mark(
-            fanotify_fd_,
-            FAN_MARK_ADD | FAN_MARK_MOUNT,
-            FAN_MODIFY | FAN_CLOSE_WRITE,
-            AT_FDCWD,
-            path.c_str()
-        );
-        
-        if (ret < 0) {
-            std::cerr << "Failed to mark path " << path << ": " << strerror(errno) << std::endl;
-        }
-    }
-    
-    // Default whitelisted paths
-    whitelisted_paths_.push_back("/tmp/koraav-*"); // Placeholder
-    
-    std::cout << "Ransomware detector initialized on " << protected_paths.size() 
-              << " path(s)" << std::endl;
-    std::cout << "Encryption attempt threshold: " << ENCRYPTION_ATTEMPT_THRESHOLD 
-              << " attempts" << std::endl;
-    
+bool RansomwareDetector::Initialize() {
+    std::cout << "✓ Behavioral Ransomware Detector initialized" << std::endl;
+    std::cout << "  → Monitoring file operations for ransomware patterns" << std::endl;
     return true;
 }
 
-void RansomwareDetector::Run() {
-    running_ = true;
-
-    if (fanotify_fd_ < 0) {
-        std::cerr << "Ransomware detector: fanotify not available, exiting thread" << std::endl;
-        return;
-    }
-
-    char buffer[4096];
-    struct pollfd pfd = { fanotify_fd_, POLLIN, 0 };
-
-    while (running_) {
-        // Use poll() with timeout so we can check running_ flag regularly.
-        // This prevents blocking forever when there are no events.
-        int ready = poll(&pfd, 1, 500);  // 500ms timeout
-        if (ready < 0) {
-            if (errno == EINTR) continue;
-            std::cerr << "Error polling fanotify: " << strerror(errno) << std::endl;
-            break;
-        }
-        if (ready == 0) continue;  // Timeout, loop back and check running_
-
-        ssize_t len = read(fanotify_fd_, buffer, sizeof(buffer));
-        if (len < 0) {
-            if (errno == EINTR || errno == EAGAIN) continue;
-            std::cerr << "Error reading fanotify events: " << strerror(errno) << std::endl;
-            break;
-        }
+void RansomwareDetector::InitializeWhitelist() {
+    // Non exhaustive list of system services that legitimately write many files
+    whitelisted_processes_ = {
+        // Package managers
+        "apt", "apt-get", "dpkg", "rpm", "yum", "dnf", "pacman",
         
-        // Process each event in the buffer.
-        // Since we use FAN_CLASS_NOTIF (no permission events), we never
-        // send FAN_ALLOW/FAN_DENY. We just resolve the path, analyse,
-        // then close the fd to avoid fd exhaustion.
-        char* ptr = buffer;
-        while (ptr < buffer + len) {
-            struct fanotify_event_metadata* metadata =
-                (struct fanotify_event_metadata*)ptr;
+        // System services
+        "systemd", "systemd-journald", "systemd-udevd",
+        "rsyslogd", "syslog-ng",
+        
+        // Backup software
+        "rsync", "rsnapshot", "duplicity", "restic",
+        "borg", "bacula", "amanda",
+        
+        // File system utilities
+        "logrotate", "updatedb", "mlocate",
+        
+        // Database systems
+        "mysqld", "postgres", "mongod", "redis-server",
+        
+        // Build systems
+        "make", "cmake", "gcc", "g++", "clang",
+        
+        // Archive tools (when used legitimately)
+        "tar", "gzip", "bzip2", "xz",
+        
+        // Text editors (bulk operations)
+        "vim", "emacs", "nano", "sed", "awk",
+        
+        // System maintenance
+        "cron", "anacron", "systemd-tmpfiles",
+        
+        // Update managers
+        "unattended-upgrades", "packagekit",
+        
+        // Desktop search indexers
+        "baloo_file", "tracker-miner-fs",
+        
+        // Our own daemon/files
+        "korad", "koraav"
+    };
+}
 
-            if (metadata->vers != FANOTIFY_METADATA_VERSION) {
-                std::cerr << "Fanotify metadata version mismatch" << std::endl;
+bool RansomwareDetector::IsWhitelisted(uint32_t tgid, const std::string& process_name) {
+    // Check if process name is in whitelist
+    if (whitelisted_processes_.find(process_name) != whitelisted_processes_.end()) {
+        stats_.false_positives_prevented++;
+        return true;
+    }
+    
+    // Check if process is a system daemon (UID 0 and specific patterns)
+    std::string stat_path = "/proc/" + std::to_string(tgid) + "/status";
+    std::ifstream status_file(stat_path);
+    if (status_file) {
+        std::string line;
+        while (std::getline(status_file, line)) {
+            if (line.find("Uid:") == 0) {
+                // Parse UID
+                std::istringstream iss(line);
+                std::string label;
+                uint32_t uid;
+                iss >> label >> uid;
+                
+                // Root processes with system-like names
+                if (uid == 0 && (process_name.find("systemd") == 0 ||
+                                 process_name.find("update") != std::string::npos)) {
+                    stats_.false_positives_prevented++;
+                    return true;
+                }
                 break;
             }
+        }
+    }
+    
+    return false;
+}
 
-            uint32_t pid = metadata->pid;
-            int fd       = metadata->fd;
+void RansomwareDetector::TrackFileOperation(uint32_t tgid, const std::string& path,
+                                              const std::string& operation) {
+    std::lock_guard<std::mutex> lock(activities_mutex_);
+    
+    auto& activity = process_activities_[tgid];
+    auto now = std::chrono::system_clock::now();
+    
+    // Initialize timing
+    if (activity.write_count == 0 && activity.rename_count == 0 && activity.delete_count == 0) {
+        activity.first_activity = now;
+    }
+    activity.last_activity = now;
+    
+    // Track operation
+    FileOperation op{path, operation, now};
+    activity.file_operations.push_back(op);
+    
+    // Update counts
+    if (operation == "write") {
+        if (activity.pre_write_entropy.find(path) == activity.pre_write_entropy.end()) {
+            double entropy = CalculateEntropy(path, 4096);
+            activity.pre_write_entropy[path] = entropy;
+        }
+        activity.write_count++;
+    } else if (operation == "rename") {
+        activity.rename_count++;
+    } else if (operation == "delete") {
+        activity.delete_count++;
+    }
+    
+    // Track unique files and directories
+    activity.files_touched.insert(path);
+    activity.directories_touched.insert(GetDirectoryPath(path));
+    
+    // Calculate operations per second
+    activity.operations_per_second = CalculateOperationsPerSecond(activity);
 
-            // Resolve path from the event fd
-            char path_buf[PATH_MAX] = {};
-            if (fd >= 0) {
-                char fd_path[64];
-                snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd);
-                ssize_t plen = readlink(fd_path, path_buf, sizeof(path_buf) - 1);
-                if (plen > 0) path_buf[plen] = '\0';
-            }
+    // Only check entropy if suspicious activity threshold crossed
+    if (!activity.entropy_spike_detected) {
 
-            if (path_buf[0] != '\0' &&
-                !IsWhitelisted(pid) &&
-                !IsPathWhitelisted(path_buf)) {
+        uint32_t files_count = activity.files_touched.size();
 
-                {
-                    std::lock_guard<std::mutex> lock(stats_mutex_);
-                    stats_.files_checked++;
+        if (files_count >= thresholds_.files_before_action &&
+            activity.operations_per_second > thresholds_.max_ops_per_second / 2) {
+
+            for (const auto& file : activity.files_touched) {
+
+                // Skip files already entropy-checked
+                if (activity.entropy_checked_files.count(file))
+                    continue;
+
+                auto it = activity.pre_write_entropy.find(file);
+                if (it == activity.pre_write_entropy.end())
+                    continue;
+
+                double before = it->second;
+                double after = CalculateEntropy(file, 4096);
+                double delta = after - before;
+
+                activity.entropy_checked_files.insert(file);
+
+                if (delta > thresholds_.entropy_delta_threshold) {
+                    activity.entropy_spike_detected = true;
+                    break;
                 }
-
-                if (metadata->mask & (FAN_MODIFY | FAN_CLOSE_WRITE)) {
-                    // Sample the file to check entropy
-                    std::vector<uint8_t> data(8192);
-                    if (fd >= 0) {
-                        lseek(fd, 0, SEEK_SET);
-                        ssize_t bytes_read = read(fd, data.data(), data.size());
-                        if (bytes_read > 0) {
-                            data.resize(bytes_read);
-
-                            if (IsDataEncrypted(data)) {
-                                double entropy = CalculateEntropy(data);
-                                bool should_kill = TrackAndDecideAction(pid, path_buf);
-                                std::string proc_name = GetProcessName(pid);
-
-                                {
-                                    std::lock_guard<std::mutex> lock(stats_mutex_);
-                                    stats_.encryption_attempts_blocked++;
-                                }
-
-                                std::cout << "⚠ High-entropy write: "
-                                          << proc_name << " (PID " << pid << ") → "
-                                          << path_buf
-                                          << " entropy=" << std::fixed
-                                          << std::setprecision(2) << entropy
-                                          << std::endl;
-
-                                if (should_kill) {
-                                    std::cout << "\n🚨 RANSOMWARE CONFIRMED - killing PID " << pid << std::endl;
-                                    QuarantineProcess(pid);
-                                    kill(pid, SIGKILL);
-                                    {
-                                        std::lock_guard<std::mutex> lock(behavior_mutex_);
-                                        process_behaviors_[pid].killed = true;
-                                    }
-                                    {
-                                        std::lock_guard<std::mutex> lock(stats_mutex_);
-                                        stats_.processes_killed++;
-                                    }
-                                    LogIncident(pid, proc_name, path_buf, entropy, true,
-                                                process_behaviors_[pid].encryption_attempts);
-                                } else {
-                                    LogIncident(pid, proc_name, path_buf, entropy, false,
-                                                process_behaviors_[pid].encryption_attempts);
-                                }
-                            }
-                        }
-                    }
-                }
             }
-
-            // Always close fd - required to avoid exhaustion
-            if (fd >= 0) close(fd);
-            ptr += metadata->event_len;
         }
     }
 }
 
-void RansomwareDetector::Stop() {
-    running_ = false;
-    if (fanotify_fd_ >= 0) {
-        close(fanotify_fd_);
-        fanotify_fd_ = -1;
+void RansomwareDetector::TrackRename(uint32_t tgid, const std::string& old_path,
+                                       const std::string& new_path) {
+    std::lock_guard<std::mutex> lock(activities_mutex_);
+    
+    auto& activity = process_activities_[tgid];
+    auto now = std::chrono::system_clock::now();
+    
+    // Track rename
+    RenameOperation rename{old_path, new_path, now};
+    activity.rename_operations.push_back(rename);
+    
+    // Track extension changes
+    std::string old_ext = GetFileExtension(old_path);
+    std::string new_ext = GetFileExtension(new_path);
+    
+    if (old_ext != new_ext && !old_ext.empty()) {
+        activity.extension_changes[old_ext]++;
+        
+        // Check if this is mass extension change
+        if (activity.extension_changes[old_ext] >= thresholds_.extension_change_threshold) {
+            activity.mass_extension_change = true;
+        }
     }
 }
 
-void RansomwareDetector::WhitelistProcess(uint32_t pid) {
-    whitelisted_pids_.insert(pid);
-    std::cout << "Whitelisted process PID " << pid << " (requires root)" << std::endl;
-}
-
-void RansomwareDetector::RemoveFromWhitelist(uint32_t pid) {
-    whitelisted_pids_.erase(pid);
-}
-
-bool RansomwareDetector::IsWhitelisted(uint32_t pid) const {
-    return whitelisted_pids_.find(pid) != whitelisted_pids_.end();
-}
-
-void RansomwareDetector::WhitelistPath(const std::string& pattern) {
-    whitelisted_paths_.push_back(pattern);
-    std::cout << "Whitelisted path pattern: " << pattern << std::endl;
-}
-
-RansomwareDetector::Statistics RansomwareDetector::GetStatistics() const {
-    std::lock_guard<std::mutex> lock(stats_mutex_);
-    return stats_;
-}
-
-std::vector<RansomwareDetector::ProcessBehavior> RansomwareDetector::GetSuspiciousProcesses() const {
-    std::lock_guard<std::mutex> lock(behavior_mutex_);
+int RansomwareDetector::AnalyzeProcess(uint32_t tgid) {
+    std::lock_guard<std::mutex> lock(activities_mutex_);
     
-    std::vector<ProcessBehavior> result;
+    auto it = process_activities_.find(tgid);
+    if (it == process_activities_.end()) {
+        return 0;
+    }
     
-    for (const auto& [pid, activity] : process_behaviors_) {
-        if (!activity.killed && activity.encryption_attempts > 0) {
-            ProcessBehavior behavior;
-            behavior.pid = pid;
-            behavior.process_name = activity.process_name;
-            behavior.encryption_attempts = activity.encryption_attempts;
-            behavior.files_targeted = activity.files_targeted.size();
-            behavior.first_attempt = activity.first_attempt;
-            behavior.last_attempt = activity.last_attempt;
-            behavior.is_confirmed_ransomware = IsConfirmedRansomware(activity);
-            
-            for (const auto& file : activity.files_targeted) {
-                behavior.targeted_files.push_back(file);
-            }
-            
-            result.push_back(behavior);
+    auto& activity = it->second;
+    
+    stats_.processes_analyzed++;
+    
+    // Run advanced detection checks (updates activity flags)
+    DetectFsyncPattern(tgid);
+    DetectSuspiciousParent(tgid);
+    DetectBackupTampering(tgid);
+    
+    // Calculate ransomware score (includes advanced patterns)
+    int score = CalculateRansomwareScore(activity);
+    
+    return score;
+}
+
+int RansomwareDetector::CalculateRansomwareScore(const ProcessActivity& activity) {
+    int score = 0;
+
+    // ═══════════════════════════════════════════════════════════
+    // ENTROPY DELTA INCREASE (Strong Encryption Indicator)
+    // ═══════════════════════════════════════════════════════════
+
+    if (activity.entropy_spike_detected) {
+        score += 45;  // Very strong indicator
+    }
+
+    
+    // ═══════════════════════════════════════════════════════════
+    // FILE OPERATION VELOCITY (Critical Indicator)
+    // ═══════════════════════════════════════════════════════════
+    
+    if (activity.operations_per_second > thresholds_.max_ops_per_second) {
+        score += 40;  // Very high velocity = likely ransomware
+    } else if (activity.operations_per_second > thresholds_.max_ops_per_second / 2) {
+        score += 25;  // Moderate velocity = suspicious
+    }
+    
+    // ═══════════════════════════════════════════════════════════
+    // NUMBER OF FILES TOUCHED (Rapid Burst)
+    // ═══════════════════════════════════════════════════════════
+    
+    uint32_t files_count = activity.files_touched.size();
+    
+    if (files_count >= thresholds_.max_files_touched) {
+        score += 35;  // 20+ files in short time
+    } else if (files_count >= thresholds_.max_files_touched / 2) {
+        score += 20;  // 10+ files
+    } else if (files_count >= thresholds_.files_before_action) {
+        score += 10;  // 5+ files (threshold for action)
+    }
+    
+    // ═══════════════════════════════════════════════════════════
+    // DIRECTORY SPREAD (Traversal Pattern)
+    // ═══════════════════════════════════════════════════════════
+    
+    uint32_t dirs_count = activity.directories_touched.size();
+    
+    if (dirs_count >= thresholds_.max_directories) {
+        score += 30;  // 10+ directories = systematic scan
+    } else if (dirs_count >= thresholds_.max_directories / 2) {
+        score += 15;  // 5+ directories
+    }
+    
+    // ═══════════════════════════════════════════════════════════
+    // MASS RENAME BEHAVIOR (Key Ransomware Indicator)
+    // ═══════════════════════════════════════════════════════════
+    
+    if (activity.rename_count >= thresholds_.max_renames) {
+        score += 35;  // 15+ renames = strong indicator
+    } else if (activity.rename_count >= thresholds_.max_renames / 2) {
+        score += 20;  // 8+ renames
+    }
+    
+    // ═══════════════════════════════════════════════════════════
+    // EXTENSION REWRITING (Classic Ransomware)
+    // ═══════════════════════════════════════════════════════════
+    
+    if (activity.mass_extension_change) {
+        score += 40;  // Mass extension change = definite ransomware
+    }
+    
+    // Check for suspicious extensions (.encrypted, .locked, .crypto, etc.)
+    for (const auto& [old_ext, count] : activity.extension_changes) {
+        if (count >= 3) {  // Same extension changed 3+ times
+            score += 15;
         }
     }
     
-    return result;
-}
-
-bool RansomwareDetector::TrackAndDecideAction(uint32_t pid, const std::string& filepath) {
-    std::lock_guard<std::mutex> lock(behavior_mutex_);
+    // ═══════════════════════════════════════════════════════════
+    // SEQUENTIAL DIRECTORY TRAVERSAL
+    // ═══════════════════════════════════════════════════════════
     
-    auto& activity = process_behaviors_[pid];
-    
-    // First time seeing this process
-    if (activity.encryption_attempts == 0) {
-        activity.process_name = GetProcessName(pid);
-        activity.first_attempt = std::chrono::system_clock::now();
-        activity.killed = false;
-        activity.quarantined = false;
+    if (DetectSequentialTraversal(activity)) {
+        score += 25;  // Systematic iteration = ransomware pattern
+        const_cast<ProcessActivity&>(activity).sequential_directory_scan = true;
     }
     
-    // Update activity
-    activity.encryption_attempts++;
-    activity.files_targeted.insert(filepath);
-    activity.last_attempt = std::chrono::system_clock::now();
+    // ═══════════════════════════════════════════════════════════
+    // WRITE-RENAME-DELETE PATTERN
+    // ═══════════════════════════════════════════════════════════
     
-    // Check if this confirms ransomware behavior
-    return IsConfirmedRansomware(activity);
-}
-
-bool RansomwareDetector::IsConfirmedRansomware(const ProcessActivity& activity) const {
-    // Already killed/handled
-    if (activity.killed) {
-        return false;
+    if (activity.write_count > 0 && activity.rename_count > 0 && activity.delete_count > 0) {
+        // Check if operations are interleaved (common ransomware pattern)
+        if (activity.file_operations.size() >= 3) {
+            // Look for write -> rename -> delete sequences
+            bool found_pattern = false;
+            for (size_t i = 0; i < activity.file_operations.size() - 2; i++) {
+                if (activity.file_operations[i].operation == "write" &&
+                    activity.file_operations[i+1].operation == "rename" &&
+                    activity.file_operations[i+2].operation == "delete") {
+                    found_pattern = true;
+                    break;
+                }
+            }
+            if (found_pattern) {
+                score += 30;  // Classic ransomware pattern
+            }
+        }
     }
     
-    // Threshold 1: Multiple encryption attempts
-    if (activity.encryption_attempts >= ENCRYPTION_ATTEMPT_THRESHOLD) {
-        return true;
-    }
+    // ═══════════════════════════════════════════════════════════
+    // TIME WINDOW ANALYSIS (Rapid Burst)
+    // ═══════════════════════════════════════════════════════════
     
-    // Threshold 2: Rapid attempts (even if less than threshold)
     auto duration = std::chrono::duration_cast<std::chrono::seconds>(
-        activity.last_attempt - activity.first_attempt
+        activity.last_activity - activity.first_activity
     );
     
-    if (activity.encryption_attempts >= 2 && duration.count() < RAPID_ATTEMPT_SECONDS) {
-        // 2+ encryption attempts within 60 seconds = likely ransomware
-        return true;
+    if (duration.count() < thresholds_.time_window_seconds && files_count >= 10) {
+        score += 20;  // 10+ files in < 10 seconds = burst
     }
     
-    // Threshold 3: Many different files targeted
-    if (activity.files_targeted.size() >= 5) {
-        return true;
+    // ═══════════════════════════════════════════════════════════
+    // ADVANCED DETECTION PATTERNS (NEW)
+    // ═══════════════════════════════════════════════════════════
+    
+    // fsync pattern (open → write → fsync repeatedly)
+    if (activity.fsync_pattern_detected) {
+        score += 30;  // Strong indicator of encryption routine
     }
     
-    return false;
+    // Suspicious parent/child lineage
+    if (activity.suspicious_parent_detected) {
+        score += 35;  // Web server/doc viewer spawning file modifier
+    }
+    
+    // Backup tampering
+    if (activity.backup_tampering_detected) {
+        score += 45;  // Trying to destroy backups = definite malware
+    }
+    
+    // Cap at 100
+    return std::min(score, 100);
 }
 
-bool RansomwareDetector::QuarantineProcess(uint32_t pid) {
-    std::string exe_path = GetProcessExecutablePath(pid);
-    if (exe_path.empty()) {
-        std::cerr << "Could not get executable path for PID " << pid << std::endl;
-        return false;
-    }
+// Helper implementations
+double RansomwareDetector::CalculateOperationsPerSecond(const ProcessActivity& activity) {
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+        activity.last_activity - activity.first_activity
+    );
     
-    // Create quarantine directory
-    fs::create_directories("/opt/koraav/var/quarantine");
-    
-    // Generate quarantine filename with timestamp
-    auto now = std::chrono::system_clock::now();
-    auto time_t_now = std::chrono::system_clock::to_time_t(now);
-    std::ostringstream oss;
-    oss << "/opt/koraav/var/quarantine/ransomware_" << pid << "_" 
-        << std::put_time(std::localtime(&time_t_now), "%Y%m%d_%H%M%S");
-    
-    std::string quarantine_path = oss.str();
-    
-    // Copy executable to quarantine
-    try {
-        fs::copy_file(exe_path, quarantine_path, fs::copy_options::overwrite_existing);
-        
-        std::cout << "Quarantined: " << exe_path << " -> " << quarantine_path << std::endl;
-        
-        {
-            std::lock_guard<std::mutex> lock(behavior_mutex_);
-            process_behaviors_[pid].quarantined = true;
-        }
-        
-        return true;
-    } catch (const std::exception& e) {
-        std::cerr << "Failed to quarantine " << exe_path << ": " << e.what() << std::endl;
-        return false;
-    }
-}
-
-bool RansomwareDetector::IsDataEncrypted(const std::vector<uint8_t>& data) {
-    if (data.size() < 256) {
-        return false;
-    }
-    
-    int suspicion_score = 0;  // Accumulate evidence
-    
-    // METHOD 1: Entropy analysis (most reliable)
-    double entropy = CalculateEntropy(data);
-    
-    if (entropy > 7.8) {
-        suspicion_score += 50;  // Very high entropy = likely encrypted
-    } else if (entropy > 7.5) {
-        suspicion_score += 35;  // High entropy = suspicious
-    } else if (entropy > 7.0) {
-        suspicion_score += 20;  // Moderately high entropy
-    }
-    
-    // METHOD 2: Chi-square test (uniform byte distribution)
-    int freq[256] = {0};
-    for (uint8_t byte : data) {
-        freq[byte]++;
-    }
-    
-    double expected = data.size() / 256.0;
-    double chi_square = 0.0;
-    
-    for (int i = 0; i < 256; i++) {
-        double diff = freq[i] - expected;
-        chi_square += (diff * diff) / expected;
-    }
-    
-    // Low chi-square = uniform distribution = likely encrypted
-    if (chi_square < 250.0) {
-        suspicion_score += 30;  // Very uniform
-    } else if (chi_square < 300.0) {
-        suspicion_score += 20;  // Somewhat uniform
-    }
-    
-    // METHOD 3: Check for encryption signature patterns
-    // Common ransomware add headers/markers
-    
-    // Check for repeated patterns at start (some ransomware markers)
-    if (data.size() >= 16) {
-        std::string header(data.begin(), data.begin() + 16);
-        if (header.find("ENCRYPTED") != std::string::npos ||
-            header.find("LOCKED") != std::string::npos ||
-            header.find("CRYPTED") != std::string::npos) {
-            suspicion_score += 100;  // Explicit ransomware marker!
-        }
-    }
-    
-    // METHOD 4: Check if data lacks normal file signatures
-    // Normal files have magic bytes (PDF, JPEG, PNG, etc.)
-    bool has_known_format = false;
-    
-    if (data.size() >= 4) {
-        // PDF
-        if (data[0] == 0x25 && data[1] == 0x50 && data[2] == 0x44 && data[3] == 0x46) {
-            has_known_format = true;
-        }
-        // JPEG
-        else if (data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF) {
-            has_known_format = true;
-        }
-        // PNG
-        else if (data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47) {
-            has_known_format = true;
-        }
-        // ZIP
-        else if (data[0] == 0x50 && data[1] == 0x4B && data[2] == 0x03 && data[3] == 0x04) {
-            has_known_format = true;
-        }
-        // DOCX/XLSX (also ZIP-based)
-        else if (data[0] == 0x50 && data[1] == 0x4B) {
-            has_known_format = true;
-        }
-        // ELF
-        else if (data[0] == 0x7F && data[1] == 0x45 && data[2] == 0x4C && data[3] == 0x46) {
-            has_known_format = true;
-        }
-    }
-    
-    // If high entropy but NO known format = suspicious
-    if (!has_known_format && entropy > 7.0) {
-        suspicion_score += 15;
-    }
-    
-    // METHOD 5: Check for low repeating sequences
-    // Encrypted data has few repeated byte sequences
-    int repeat_count = 0;
-    for (size_t i = 0; i < data.size() - 4; i++) {
-        if (data[i] == data[i+1] && data[i] == data[i+2] && data[i] == data[i+3]) {
-            repeat_count++;
-        }
-    }
-    
-    double repeat_ratio = (double)repeat_count / data.size();
-    if (repeat_ratio < 0.001 && entropy > 7.0) {
-        suspicion_score += 10;  // Very few repeats + high entropy
-    }
-    
-    // DECISION: Threshold-based on accumulated evidence
-    // Score >= 70: Definitely encrypted
-    // Score >= 50: Likely encrypted
-    // Score < 50: Probably not encrypted
-    
-    if (suspicion_score >= 50) {
-        return true;  // Block this write!
-    }
-    
-    return false;
-}
-
-double RansomwareDetector::CalculateEntropy(const std::vector<uint8_t>& data) {
-    if (data.empty()) {
+    if (duration.count() == 0) {
         return 0.0;
     }
     
-    int freq[256] = {0};
-    for (uint8_t byte : data) {
-        freq[byte]++;
+    double seconds = duration.count() / 1000.0;
+    double total_ops = activity.write_count + activity.rename_count + activity.delete_count;
+    
+    return total_ops / seconds;
+}
+
+bool RansomwareDetector::DetectSequentialTraversal(const ProcessActivity& activity) {
+    // Check if directories are being accessed in sequential order
+    // (e.g., /home/user/Documents, /home/user/Documents/subfolder1, subfolder2, etc.)
+    
+    if (activity.directories_touched.size() < 3) {
+        return false;
     }
     
-    double entropy = 0.0;
-    size_t size = data.size();
+    std::vector<std::string> dirs(activity.directories_touched.begin(), 
+                                   activity.directories_touched.end());
+    std::sort(dirs.begin(), dirs.end());
     
-    for (int i = 0; i < 256; i++) {
-        if (freq[i] > 0) {
-            double probability = static_cast<double>(freq[i]) / size;
-            entropy -= probability * std::log2(probability);
+    // Check if paths are nested (sequential traversal)
+    int sequential_count = 0;
+    for (size_t i = 1; i < dirs.size(); i++) {
+        if (dirs[i].find(dirs[i-1]) == 0) {  // Current path starts with previous
+            sequential_count++;
         }
     }
     
-    return entropy;
+    // If 50%+ of directories are in sequential order, it's likely traversal
+    return sequential_count >= static_cast<int>(dirs.size()) / 2;
 }
 
-bool RansomwareDetector::IsPathWhitelisted(const std::string& path) const {
-    for (const auto& pattern : whitelisted_paths_) {
-        if (MatchGlob(pattern, path)) {
-            return true;
-        }
+bool RansomwareDetector::DetectMassExtensionChange(const ProcessActivity& activity) {
+    // Already tracked in extension_changes map
+    return activity.mass_extension_change;
+}
+
+std::string RansomwareDetector::GetFileExtension(const std::string& path) {
+    size_t pos = path.rfind('.');
+    if (pos != std::string::npos && pos != 0 && pos != path.length() - 1) {
+        return path.substr(pos);
     }
-    return false;
-}
-
-bool RansomwareDetector::MatchGlob(const std::string& pattern, const std::string& text) const {
-    int result = fnmatch(pattern.c_str(), text.c_str(), FNM_PATHNAME);
-    return (result == 0);
-}
-
-std::string RansomwareDetector::GetProcessName(uint32_t pid) {
-    char path[64];
-    snprintf(path, sizeof(path), "/proc/%u/comm", pid);
-    
-    std::ifstream file(path);
-    std::string name;
-    std::getline(file, name);
-    
-    return name.empty() ? "unknown" : name;
-}
-
-std::string RansomwareDetector::GetProcessCommandLine(uint32_t pid) {
-    char path[64];
-    snprintf(path, sizeof(path), "/proc/%u/cmdline", pid);
-    
-    std::ifstream file(path, std::ios::binary);
-    std::string cmdline;
-    std::getline(file, cmdline, '\0');
-    
-    std::replace(cmdline.begin(), cmdline.end(), '\0', ' ');
-    
-    return cmdline;
-}
-
-std::string RansomwareDetector::GetProcessExecutablePath(uint32_t pid) {
-    char path[64];
-    char exe_path[PATH_MAX];
-    
-    snprintf(path, sizeof(path), "/proc/%u/exe", pid);
-    ssize_t len = readlink(path, exe_path, sizeof(exe_path) - 1);
-    
-    if (len > 0) {
-        exe_path[len] = '\0';
-        return std::string(exe_path);
-    }
-    
     return "";
 }
 
-void RansomwareDetector::LogIncident(uint32_t pid, const std::string& process_name,
-                                    const std::string& filepath, double entropy,
-                                    bool killed, int total_attempts) {
-    std::lock_guard<std::mutex> lock(log_mutex_);
-    
-    auto now = std::chrono::system_clock::now();
-    auto time_t_now = std::chrono::system_clock::to_time_t(now);
-    
-    if (incident_log_.is_open()) {
-        incident_log_ << "================== RANSOMWARE DETECTION ==================\n";
-        incident_log_ << "Timestamp: " << std::put_time(std::localtime(&time_t_now), "%Y-%m-%d %H:%M:%S") << "\n";
-        incident_log_ << "Process: " << process_name << " (PID: " << pid << ")\n";
-        incident_log_ << "Command Line: " << GetProcessCommandLine(pid) << "\n";
-        incident_log_ << "Executable: " << GetProcessExecutablePath(pid) << "\n";
-        incident_log_ << "Target File: " << filepath << "\n";
-        incident_log_ << "Entropy: " << std::fixed << std::setprecision(4) << entropy << "/8.0\n";
-        incident_log_ << "Total Attempts: " << total_attempts << "\n";
-        incident_log_ << "Action: " << (killed ? "PROCESS KILLED & QUARANTINED" : "WRITE BLOCKED (monitoring)") << "\n";
-        incident_log_ << "File Status: SAFE (write prevented)\n";
-        incident_log_ << "==========================================================\n";
-        incident_log_ << std::endl;
-        incident_log_.flush();
+std::string RansomwareDetector::GetDirectoryPath(const std::string& path) {
+    size_t pos = path.rfind('/');
+    if (pos != std::string::npos) {
+        return path.substr(0, pos);
     }
+    return "";
+}
+
+bool RansomwareDetector::DetectCryptoAPI(uint32_t tgid) {
+    // Check for crypto API usage by examining open file descriptors
+    // and memory maps for crypto libraries
+
+    // 1. Check memory maps for crypto libraries
+    std::string maps_path = "/proc/" + std::to_string(tgid) + "/maps";
+    std::ifstream maps_file(maps_path);
+
+    if (maps_file) {
+        std::string line;
+        while (std::getline(maps_file, line)) {
+            // Check for crypto libraries
+            if (line.find("libcrypto") != std::string::npos ||
+                line.find("libssl") != std::string::npos ||
+                line.find("openssl") != std::string::npos) {
+                return true;
+                }
+        }
+    }
+
+    // 2. Scan ALL file descriptors for crypto-related files
+    std::string fd_dir = "/proc/" + std::to_string(tgid) + "/fd";
+
+    try {
+        // Iterate through all fd entries
+        for (const auto& entry : std::filesystem::directory_iterator(fd_dir)) {
+            try {
+                // Read symlink target
+                std::filesystem::path target = std::filesystem::read_symlink(entry.path());
+                std::string target_str = target.string();
+
+                // Check for crypto-related files
+                if (target_str.find("/dev/urandom") != std::string::npos ||
+                    target_str.find("/dev/random") != std::string::npos ||
+                    target_str.find("libcrypto") != std::string::npos ||
+                    target_str.find("libssl") != std::string::npos) {
+                    return true;
+                    }
+            } catch (const std::filesystem::filesystem_error&) {
+                // FD may have closed, continue
+                continue;
+            }
+        }
+    } catch (const std::filesystem::filesystem_error&) {
+        // Process may have exited or fd dir inaccessible
+        return false;
+    }
+
+    return false;
+}
+
+std::vector<std::string> RansomwareDetector::GetThreatIndicators(uint32_t tgid) {
+    std::lock_guard<std::mutex> lock(activities_mutex_);
+    std::vector<std::string> indicators;
+    
+    auto it = process_activities_.find(tgid);
+    if (it == process_activities_.end()) {
+        return indicators;
+    }
+    
+    const auto& activity = it->second;
+
+
+    if (activity.entropy_spike_detected) {
+        indicators.push_back("ENTROPY SPIKE detected (possible encryption)");
+    }
+    
+    // High-velocity file operations
+    if (activity.operations_per_second > thresholds_.max_ops_per_second / 2) {
+        std::ostringstream oss;
+        oss << "HIGH VELOCITY: " << std::fixed << std::setprecision(1)
+            << activity.operations_per_second << " operations/second";
+        indicators.push_back(oss.str());
+    }
+    
+    // Files touched
+    if (!activity.files_touched.empty()) {
+        std::ostringstream oss;
+        oss << "Touched " << activity.files_touched.size() << " file(s) rapidly";
+        indicators.push_back(oss.str());
+    }
+    
+    // Directory spread
+    if (activity.directories_touched.size() >= 5) {
+        std::ostringstream oss;
+        oss << "Accessed " << activity.directories_touched.size() << " different directories";
+        indicators.push_back(oss.str());
+    }
+    
+    // Mass renames
+    if (activity.rename_count >= 5) {
+        std::ostringstream oss;
+        oss << "Performed " << activity.rename_count << " rename operations";
+        indicators.push_back(oss.str());
+    }
+    
+    // Extension changes
+    if (activity.mass_extension_change) {
+        indicators.push_back("MASS EXTENSION CHANGE detected");
+        
+        // Show which extensions were changed
+        for (const auto& [ext, count] : activity.extension_changes) {
+            if (count >= 3) {
+                std::ostringstream oss;
+                oss << "  → Changed " << count << " files with extension '" << ext << "'";
+                indicators.push_back(oss.str());
+            }
+        }
+    }
+    
+    // Sequential traversal
+    if (activity.sequential_directory_scan) {
+        indicators.push_back("SEQUENTIAL DIRECTORY TRAVERSAL detected");
+    }
+    
+    // Crypto API
+    if (activity.crypto_api_detected) {
+        indicators.push_back("Crypto library usage detected");
+    }
+    
+    // ═══ ADVANCED PATTERNS (NEW) ═══
+    
+    // fsync pattern
+    if (activity.fsync_pattern_detected) {
+        indicators.push_back("⚠️  FSYNC PATTERN detected (open → write → fsync sequence)");
+    }
+    
+    // Suspicious parent
+    if (activity.suspicious_parent_detected) {
+        indicators.push_back("⚠️  SUSPICIOUS PARENT detected (web server/browser/doc viewer)");
+    }
+    
+    // Backup tampering
+    if (activity.backup_tampering_detected) {
+        indicators.push_back("🚨 BACKUP TAMPERING detected (destroying ransomware protection!)");
+    }
+    
+    // Time window
+    auto duration = std::chrono::duration_cast<std::chrono::seconds>(
+        activity.last_activity - activity.first_activity
+    );
+    
+    if (duration.count() < thresholds_.time_window_seconds && activity.files_touched.size() >= 5) {
+        std::ostringstream oss;
+        oss << "RAPID BURST: " << activity.files_touched.size() 
+            << " files in " << duration.count() << " seconds";
+        indicators.push_back(oss.str());
+    }
+    
+    // Show first few affected files
+    if (!activity.file_operations.empty()) {
+        indicators.push_back("Affected files:");
+        int count = 0;
+        for (const auto& op : activity.file_operations) {
+            if (count++ >= 5) break;  // Show first 5
+            std::ostringstream oss;
+            oss << "  → " << op.operation << ": " << op.path;
+            indicators.push_back(oss.str());
+        }
+        if (activity.file_operations.size() > 5) {
+            std::ostringstream oss;
+            oss << "  ... and " << (activity.file_operations.size() - 5) << " more";
+            indicators.push_back(oss.str());
+        }
+    }
+    
+    return indicators;
+}
+
+void RansomwareDetector::CleanupProcess(uint32_t tgid) {
+    std::lock_guard<std::mutex> lock(activities_mutex_);
+    process_activities_.erase(tgid);
+}
+
+std::vector<uint32_t> RansomwareDetector::GetSuspiciousProcesses(int min_score) {
+    std::lock_guard<std::mutex> lock(activities_mutex_);
+    std::vector<uint32_t> suspicious;
+    
+    for (const auto& [tgid, activity] : process_activities_) {
+        int score = CalculateRansomwareScore(activity);
+        if (score >= min_score) {
+            suspicious.push_back(tgid);
+        }
+    }
+    
+    return suspicious;
+}
+
+double RansomwareDetector::CalculateEntropy(const std::string& path, size_t sample_size) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) return 0.0;
+
+    std::vector<unsigned char> buffer(sample_size);
+    file.read(reinterpret_cast<char*>(buffer.data()), sample_size);
+    size_t bytes_read = file.gcount();
+    if (bytes_read == 0) return 0.0;
+
+    std::array<size_t, 256> freq{};
+    for (size_t i = 0; i < bytes_read; ++i) {
+        freq[buffer[i]]++;
+    }
+
+    double entropy = 0.0;
+    for (size_t i = 0; i < 256; ++i) {
+        if (freq[i] == 0) continue;
+        double p = static_cast<double>(freq[i]) / bytes_read;
+        entropy -= p * std::log2(p);
+    }
+
+    return entropy;
+}
+
+
+
+
+
+
+
+
+
+// ═══════════════════════════════════════════════════════════
+// ADVANCED DETECTION PATTERNS
+// ═══════════════════════════════════════════════════════════
+
+bool RansomwareDetector::DetectFsyncPattern(uint32_t tgid) {
+    auto it = process_activities_.find(tgid);
+    if (it == process_activities_.end()) {
+        return false;
+    }
+    
+    auto& activity = it->second;
+    
+    // Check for open → write → fsync pattern (typical encryption routine)
+    // Heuristic: High velocity + many files = likely fsync pattern
+    if (activity.operations_per_second > 20.0 && activity.files_touched.size() > 10) {
+        activity.fsync_pattern_detected = true;
+        activity.fsync_sequence_count++;
+        return true;
+    }
+    
+    return false;
+}
+
+bool RansomwareDetector::DetectSuspiciousParent(uint32_t tgid) {
+    std::string stat_path = "/proc/" + std::to_string(tgid) + "/stat";
+    std::ifstream stat_file(stat_path);
+    if (!stat_file) {
+        return false;
+    }
+    
+    std::string line;
+    std::getline(stat_file, line);
+    
+    size_t first_paren = line.find('(');
+    size_t last_paren = line.rfind(')');
+    if (first_paren == std::string::npos || last_paren == std::string::npos) {
+        return false;
+    }
+    
+    std::string after_comm = line.substr(last_paren + 1);
+    std::istringstream iss(after_comm);
+    
+    char state;
+    uint32_t ppid;
+    iss >> state >> ppid;
+    
+    std::string parent_comm_file = "/proc/" + std::to_string(ppid) + "/comm";
+    std::ifstream parent_comm(parent_comm_file);
+    if (!parent_comm) {
+        return false;
+    }
+    
+    std::string parent_name;
+    std::getline(parent_comm, parent_name);
+    
+    std::vector<std::string> suspicious_parents = {
+        "apache2", "nginx", "httpd",
+        "firefox", "chrome", "chromium",
+        "evince", "okular", "xpdf",
+        "thunderbird", "evolution",
+        "libreoffice", "soffice"
+    };
+    
+    for (const auto& suspicious : suspicious_parents) {
+        if (parent_name.find(suspicious) != std::string::npos) {
+            auto it = process_activities_.find(tgid);
+            if (it != process_activities_.end()) {
+                it->second.suspicious_parent_detected = true;
+                return true;
+            }
+        }
+    }
+    
+    return false;
+}
+
+bool RansomwareDetector::DetectBackupTampering(uint32_t tgid) {
+    auto it = process_activities_.find(tgid);
+    if (it == process_activities_.end()) {
+        return false;
+    }
+    
+    auto& activity = it->second;
+    
+    if (activity.process_name == "systemctl") {
+        std::string cmdline_path = "/proc/" + std::to_string(tgid) + "/cmdline";
+        std::ifstream cmdline_file(cmdline_path);
+        if (cmdline_file) {
+            std::string cmdline;
+            std::getline(cmdline_file, cmdline, '\0');
+            
+            if (cmdline.find("stop") != std::string::npos) {
+                std::vector<std::string> backup_services = {
+                    "bacula", "duplicity", "rsnapshot", "backup",
+                    "vss", "shadow", "timeshift"
+                };
+                
+                for (const auto& service : backup_services) {
+                    if (cmdline.find(service) != std::string::npos) {
+                        activity.backup_tampering_detected = true;
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    
+    std::vector<std::string> backup_dirs = {
+        "/var/backups", "/backup", "/backups",
+        "/mnt/backup", "/media/backup",
+        "/.snapshots", "/timeshift"
+    };
+    
+    for (const auto& file : activity.files_touched) {
+        for (const auto& backup_dir : backup_dirs) {
+            if (file.find(backup_dir) != std::string::npos) {
+                activity.backup_tampering_detected = true;
+                return true;
+            }
+        }
+    }
+    
+    return false;
 }
 
 } // namespace realtime

@@ -75,6 +75,9 @@ private:
 
         std::unordered_set<std::string> sensitive_files_accessed;
         std::unordered_set<std::string> sensitive_directories;
+
+        bool webhook_detected = false;
+        uint32_t https_connections_after_files = 0;
     };
 
     std::unordered_map<uint32_t, ProcessActivity> process_activities_;

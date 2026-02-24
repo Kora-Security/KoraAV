@@ -44,6 +44,18 @@ static __always_inline bool starts_with(const char *str, const char *prefix, int
     return true;
 }
 
+// Helper: Check if command is attempting snapshot deletion
+static __always_inline bool is_snapshot_deletion_attempt(const char *comm) {
+    // Check for snapshot management tools
+    if (starts_with(comm, "btrfs", 5) ||
+        starts_with(comm, "lvremove", 8) ||
+        starts_with(comm, "lvchange", 8) ||
+        starts_with(comm, "zfs", 3)) {
+        return true;
+    }
+    return false;
+}
+
 // Helper: Check if process is interesting (shell, terminal, or suspicious)
 static __always_inline bool is_interesting_process(const char *comm) {
     // Shells (high priority - ClickFix detection)
@@ -149,6 +161,42 @@ int trace_execve(struct trace_event_raw_sys_enter *ctx) {
     
     // Only send event if process is interesting OR we're sampling
     bool is_interesting = is_interesting_process(comm);
+    bool is_snapshot_cmd = is_snapshot_deletion_attempt(comm);
+    
+    // ALWAYS send snapshot deletion attempts regardless of filters
+    if (is_snapshot_cmd) {
+        // Skip rate limiting for snapshot commands - send immediately
+        struct process_event *event = bpf_ringbuf_reserve(&process_events, sizeof(*event), 0);
+        if (!event) {
+            return 0;
+        }
+        
+        event->timestamp = bpf_ktime_get_ns();
+        event->tgid = tgid;
+        event->uid = uid;
+        
+        __builtin_memcpy(event->comm, comm, MAX_COMM_LEN);
+        
+        // Get parent PID
+        struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+        struct task_struct *parent;
+        BPF_CORE_READ_INTO(&parent, task, real_parent);
+        BPF_CORE_READ_INTO(&event->ptgid, parent, tgid);
+        
+        // Get full command line
+        const char **argv_ptr = (const char **)ctx->args[1];
+        const char *first_arg = NULL;
+        bpf_probe_read_user(&first_arg, sizeof(first_arg), argv_ptr);
+        
+        if (first_arg) {
+            bpf_probe_read_user_str(event->cmdline, MAX_CMDLINE_LEN, first_arg);
+        } else {
+            event->cmdline[0] = '\0';
+        }
+        
+        bpf_ringbuf_submit(event, 0);
+        return 0;
+    }
     
     // FILTER #3: If not interesting, use heavy sampling (1% of events)
     if (!is_interesting) {

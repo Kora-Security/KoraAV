@@ -119,6 +119,7 @@ add_library(koraav_realtime STATIC
     src/realtime-protection/behavioral-analysis/ransomware_detector.cpp
     src/realtime-protection/behavioral-analysis/clickfix_detector.cpp
     src/realtime-protection/behavioral-analysis/c2_detector.cpp
+    src/realtime-protection/behavioral-analysis/canary_file_system.cpp
 
     # YARA real-time scanning (uses YaraManager)
     src/realtime-protection/yara-realtime/realtime_yara_scanner.cpp
@@ -129,15 +130,17 @@ add_library(koraav_realtime STATIC
 
     # Daemon
     src/daemon/secure_ipc.cpp
+
+    # File Restore Util
+    src/realtime-protection/behavioral-analysis/snapshot_system.cpp
 )
 
 target_link_libraries(koraav_realtime
     koraav_common   # Provides YaraManager
     koraav_scanner  # For backwards compatibility
     ${CAP_LIBRARY}
+    stdc++fs        # C++17 filesystem support (required for ransomware detector)
 )
-
-# Note: YARA is already linked via koraav_common
 
 
 # Daemon library

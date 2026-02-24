@@ -219,22 +219,25 @@ bool KoraAVDaemon::Initialize(const std::string& config_path) {
     if (config_.detect_ransomware) {
         ransomware_detector_ = std::make_unique<realtime::RansomwareDetector>();
         
-        // Build protected paths from config
-        std::vector<std::string> protected_paths = {
-            "/home",
-            "/root",
-            "/opt",
-            "/var",
-            "/srv",
-            "/mnt",
-            "/media"
-        };
-        
-        if (!ransomware_detector_->Initialize(protected_paths)) {
+        if (!ransomware_detector_->Initialize()) {
             std::cerr << "Failed to initialize ransomware detector" << std::endl;
         } else {
             std::cout << "✓ Ransomware detector initialized" << std::endl;
         }
+    }
+
+    // Initialize snapshot system
+    snapshot_system_ = std::make_unique<realtime::SnapshotSystem>();
+    if (!snapshot_system_->Initialize()) {
+        std::cerr << "Warning: Snapshot/Rollback system not available" << std::endl;
+        return false;
+    }
+    
+    // Initialize canary file system
+    canary_system_ = std::make_unique<realtime::CanaryFileSystem>();
+    if (!canary_system_->Initialize(2)) {  // 2 canaries per directory
+        std::cerr << "Warning: Canary file system initialization failed" << std::endl;
+        return false;
     }
     
     if (config_.detect_clickfix) {
@@ -267,13 +270,29 @@ void KoraAVDaemon::Run() {
     std::cout << "Starting KoraAV Real-Time Protection..." << std::endl;
     
     // Start detection engines
+    // Ransomware detector is now passive (no separate thread needed)
     if (ransomware_detector_) {
-        // Ransomware detector needs its own thread (Run() is blocking)
-        ransomware_thread_ = std::thread([this]() {
-            ransomware_detector_->Run();
-        });
-        std::cout << "✓ Ransomware protection active" << std::endl;
+        std::cout << "✓ Ransomware protection active (behavioral analysis)" << std::endl;
     }
+
+    // Start snapshot creation thread (every 5 minutes)
+    std::thread snapshot_thread([this]() {
+        std::cout << "Snapshot thread started (5-minute intervals)" << std::endl;
+
+        while (running_) {
+            // Sleep 5 minutes
+            std::this_thread::sleep_for(std::chrono::minutes(5));
+
+            if (snapshot_system_) {
+                std::string snap_id = snapshot_system_->CreateSnapshot();
+                if (!snap_id.empty()) {
+                    std::cout << "📸 Snapshot created: " << snap_id << std::endl;
+                }
+            }
+        }
+
+        std::cout << "Snapshot thread stopped" << std::endl;
+    });
     
     if (infostealer_detector_) {
         std::cout << "✓ Info stealer protection active" << std::endl;
@@ -307,6 +326,7 @@ void KoraAVDaemon::Run() {
     
     std::cout << "✓ KoraAV is now protecting your system" << std::endl;
     std::cout << "Daemon running (managed by systemd)" << std::endl;
+    snapshot_thread.join();
     
     // Notify systemd we're ready
     const char* notify_socket = getenv("NOTIFY_SOCKET");
@@ -355,15 +375,9 @@ void KoraAVDaemon::Stop() {
     
     std::cout << "Stopping detection engines..." << std::endl;
     
-    // Stop detection engines
-    if (ransomware_detector_) {
-        ransomware_detector_->Stop();
-    }
-    
-    // InfoStealer and ClickFix don't have Stop() methods (passive detectors)
+    // Behavioral detectors are passive (no Stop() needed)
     
     // Wait for threads to finish
-    if (ransomware_thread_.joinable())         ransomware_thread_.join();
     if (file_event_thread_.joinable())         file_event_thread_.join();
     if (file_analysis_thread_.joinable())      file_analysis_thread_.join();
     if (process_event_thread_.joinable())      process_event_thread_.join();
@@ -420,73 +434,195 @@ void KoraAVDaemon::Stop() {
 }
 
 bool KoraAVDaemon::LoadConfiguration(const std::string& config_path) {
-    // Set defaults
+    std::cout << "Loading configuration from: " << config_path << std::endl;
+
+    // Set defaults FIRST
     config_.enable_file_monitor = true;
     config_.enable_process_monitor = true;
     config_.enable_network_monitor = true;
+
     config_.detect_infostealer = true;
     config_.detect_ransomware = true;
     config_.detect_clickfix = true;
+    config_.detect_c2 = true;
+
+
+    // NEW: Canary defaults
+    config_.enable_canary_files = true;
+    config_.canaries_per_directory = 3;
+
+    // NEW: Snapshot defaults
+    config_.enable_snapshots = true;
+    config_.snapshot_interval_minutes = 5;
+    config_.max_snapshots = 6;
+    config_.snapshot_dir = "/.snapshots/koraav";
+    config_.snapshot_type = "auto";
+    config_.snapshot_retention_minutes = 30;
+
+
     config_.alert_threshold = 61;
     config_.block_threshold = 81;
     config_.lockdown_threshold = 96;
+
+
+    // NEW: Detection thresholds
+    config_.entropy_delta_threshold = 2.5;
+    config_.max_ops_per_second = 50.0;
+    config_.max_files_touched = 20;
+    config_.max_directories = 10;
+    config_.max_renames = 15;
+    config_.extension_change_threshold = 4;
+    config_.time_window_seconds = 10.0;
+
+
+
     config_.auto_kill = true;
-    config_.auto_block_network = true;
+    config_.auto_quarantine = true;
+
+    config_.auto_block_network_infostealer = true;   // Block active exfil
+    config_.auto_block_network_c2 = true;            // Block C2 beaconing
+    config_.auto_block_network_clickfix = false;     // Already blocked
+    config_.auto_block_network_ransomware = false;   // Already killed
+
+    // SYSTEM LOCKDOWN - DEFAULT OFF - (Mount system as read only)
     config_.auto_lockdown = false;
+
+    // Ransomware behavioral defaults (legacy - kept for compatibility)
+    // config_.ransomware_files_before_action = 4;
+    // config_.ransomware_max_ops_per_second = 50.0;
+    // config_.ransomware_max_directories = 10;
+    // config_.ransomware_max_renames = 15;
+    // config_.ransomware_time_window = 10.0; //10s
+
     config_.log_path = "/opt/koraav/var/logs";
-    
-    // Try to load from file
-    std::ifstream file(config_path);
-    if (!file.is_open()) {
-        std::cout << "Config file not found, using defaults" << std::endl;
+    config_.enable_detailed_logging = false;
+
+    config_.enable_yara = true;
+    config_.yara_rules_path = "/opt/koraav/share/signatures/yara-rules";
+    config_.yara_scan_on_execution = true;
+    config_.yara_scan_on_download = true;
+
+    config_.process_whitelist_file = "/etc/koraav/process-whitelist.conf";
+
+    // Try to open config file
+    std::ifstream config_file(config_path);
+    if (!config_file) {
+        std::cout << "Warning: Config file not found, using defaults" << std::endl;
         return true;  // Use defaults
     }
-    
-    std::cout << "Loading configuration from " << config_path << std::endl;
-    
-    std::string line;
-    while (std::getline(file, line)) {
-        // Skip empty lines and comments
-        if (line.empty() || line[0] == '#' || line[0] == '[') {
+
+    // Parse config file
+    std::string line, current_section;
+    while (std::getline(config_file, line)) {
+        // Trim whitespace
+        line.erase(0, line.find_first_not_of(" \t"));
+        line.erase(line.find_last_not_of(" \t") + 1);
+
+        // Skip comments and empty lines
+        if (line.empty() || line[0] == '#') continue;
+
+        // Section headers
+        if (line[0] == '[' && line[line.length()-1] == ']') {
+            current_section = line.substr(1, line.length()-2);
             continue;
         }
-        
+
         // Parse key = value
         size_t eq_pos = line.find('=');
-        if (eq_pos == std::string::npos) {
-            continue;
-        }
-        
+        if (eq_pos == std::string::npos) continue;
+
         std::string key = line.substr(0, eq_pos);
         std::string value = line.substr(eq_pos + 1);
-        
-        // Trim whitespace
+
+        // Trim
         key.erase(0, key.find_first_not_of(" \t"));
         key.erase(key.find_last_not_of(" \t") + 1);
         value.erase(0, value.find_first_not_of(" \t"));
         value.erase(value.find_last_not_of(" \t") + 1);
-        
-        // Apply configuration
-        if (key == "detect_infostealer") {
-            config_.detect_infostealer = (value == "true");
-        } else if (key == "detect_ransomware") {
-            config_.detect_ransomware = (value == "true");
-        } else if (key == "detect_clickfix") {
-            config_.detect_clickfix = (value == "true");
-        } else if (key == "alert_threshold") {
-            config_.alert_threshold = std::stoi(value);
-        } else if (key == "block_threshold") {
-            config_.block_threshold = std::stoi(value);
-        } else if (key == "auto_kill") {
-            config_.auto_kill = (value == "true");
-        } else if (key == "auto_block_network") {
-            config_.auto_block_network = (value == "true");
-        } else if (key == "log_path") {
-            config_.log_path = value;
+
+        // Parse based on section
+        if (current_section == "monitoring") {
+            if (key == "enable_file_monitor") config_.enable_file_monitor = (value == "true");
+            else if (key == "enable_process_monitor") config_.enable_process_monitor = (value == "true");
+            else if (key == "enable_network_monitor") config_.enable_network_monitor = (value == "true");
+        }
+        else if (current_section == "detection") {
+            if (key == "detect_infostealer") config_.detect_infostealer = (value == "true");
+            else if (key == "detect_ransomware") config_.detect_ransomware = (value == "true");
+            else if (key == "detect_clickfix") config_.detect_clickfix = (value == "true");
+            else if (key == "detect_c2") config_.detect_c2 = (value == "true");
+            // NEW: Canary settings
+            else if (key == "enable_canary_files") config_.enable_canary_files = (value == "true");
+            else if (key == "canaries_per_directory") config_.canaries_per_directory = std::stoi(value);
+            // NEW: Snapshot settings
+            else if (key == "enable_snapshots") config_.enable_snapshots = (value == "true");
+            else if (key == "snapshot_interval_minutes") config_.snapshot_interval_minutes = std::stoi(value);
+            else if (key == "max_snapshots") config_.max_snapshots = std::stoi(value);
+        }
+        else if (current_section == "thresholds") {
+            if (key == "alert_threshold") config_.alert_threshold = std::stoi(value);
+            else if (key == "block_threshold") config_.block_threshold = std::stoi(value);
+            else if (key == "lockdown_threshold") config_.lockdown_threshold = std::stoi(value);
+            else if (key == "entropy_delta_threshold") config_.entropy_delta_threshold = std::stod(value);
+            else if (key == "max_ops_per_second") config_.max_ops_per_second = std::stod(value);
+            else if (key == "max_files_touched") config_.max_files_touched = std::stoi(value);
+            else if (key == "max_directories") config_.max_directories = std::stoi(value);
+            else if (key == "max_renames") config_.max_renames = std::stoi(value);
+            else if (key == "extension_change_threshold") config_.extension_change_threshold = std::stoi(value);
+            else if (key == "time_window_seconds") config_.time_window_seconds = std::stod(value);
+        }
+        else if (current_section == "response") {
+            if (key == "auto_kill") config_.auto_kill = (value == "true");
+            else if (key == "auto_quarantine") config_.auto_quarantine = (value == "true");
+
+            // Situational network blocking
+            else if (key == "auto_block_network_infostealer") config_.auto_block_network_infostealer = (value == "true");
+            else if (key == "auto_block_network_c2") config_.auto_block_network_c2 = (value == "true");
+            else if (key == "auto_block_network_clickfix") config_.auto_block_network_clickfix = (value == "true");
+            else if (key == "auto_block_network_ransomware") config_.auto_block_network_ransomware = (value == "true");
+            else if (key == "auto_rollback_on_ransomware") config_.auto_rollback_on_ransomware = (value == "true");
+            else if (key == "auto_lockdown") config_.auto_lockdown = (value == "true");
+        }
+        // else if (current_section == "ransomware") {
+        //     if (key == "files_before_action")
+        //         config_.ransomware_files_before_action = std::stoi(value);
+        //     else if (key == "max_operations_per_second")
+        //         config_.ransomware_max_ops_per_second = std::stod(value);
+        //     else if (key == "max_directories_touched")
+        //         config_.ransomware_max_directories = std::stoi(value);
+        //     else if (key == "max_renames")
+        //         config_.ransomware_max_renames = std::stoi(value);
+        //     else if (key == "time_window_seconds")
+        //         config_.ransomware_time_window = std::stod(value);
+        // }
+        else if (current_section == "snapshots") {
+            if (key == "snapshot_dir") config_.snapshot_dir = value;
+            else if (key == "snapshot_type") config_.snapshot_type = value;
+            else if (key == "snapshot_retention_minutes") config_.snapshot_retention_minutes = std::stoi(value);
+        }
+        else if (current_section == "logging") {
+            if (key == "log_path") config_.log_path = value;
+            else if (key == "enable_detailed_logging") config_.enable_detailed_logging = (value == "true");
+        }
+        else if (current_section == "yara") {
+            if (key == "enable_yara") config_.enable_yara = (value == "true");
+            else if (key == "rules_path") config_.yara_rules_path = value;
+            else if (key == "scan_on_execution") config_.yara_scan_on_execution = (value == "true");
+            else if (key == "scan_on_download") config_.yara_scan_on_download = (value == "true");
+        }
+        else if (current_section == "whitelist") {
+            if (key == "process_whitelist_file") config_.process_whitelist_file = value;
         }
     }
-    
-    std::cout << "✓ Configuration loaded" << std::endl;
+
+    std::cout << "✓ Configuration loaded successfully" << std::endl;
+
+    // Log important settings
+    if (config_.auto_lockdown) {
+        std::cout << "⚠️  WARNING: System lockdown is ENABLED (threshold: "
+        << config_.lockdown_threshold << ")" << std::endl;
+    }
+
     return true;
 }
 
@@ -718,9 +854,10 @@ bool KoraAVDaemon::IsSensitiveFile(const std::string& path) {
         // Environment files
         "/.env",
 
-        // Documents and Downloads
+        // Documents, Downloads, and Pictures
         "/Documents/",
         "/Downloads/",
+        "/Pictures",
 
         // Common credential files
         "/credentials",
@@ -819,8 +956,96 @@ void KoraAVDaemon::AnalyzeFileEvents() {
                       << " | PID: " << evt.tgid << " | Proc: " << proc_name << std::endl;
         }
 
-        // InfoStealer analysis
+
+        if (snapshot_system_) {
+            std::string process_name = GetProcessName(evt.tgid);
+            std::string command = GetProcessCommandLine(evt.tgid);
+
+            if (snapshot_system_->IsSnapshotDeletionAttempt(command)) {
+                std::cout << "🚨 SNAPSHOT DELETION ATTEMPT DETECTED!" << std::endl;
+                std::cout << "   Process: " << process_name << " (PID " << evt.tgid << ")" << std::endl;
+                std::cout << "   Command: " << command << std::endl;
+
+                // INSTANT KILL
+                KillProcess(evt.tgid);
+                if (quarantine_manager_) {
+                    quarantine_manager_->QuarantineProcess(evt.tgid, "SNAPSHOT_DELETION_ATTEMPT");
+                }
+
+                // Alert
+                if (notification_manager_) {
+                    notification_manager_->SendThreatAlert(
+                        "SNAPSHOT_DELETION_ATTEMPT",
+                        process_name,
+                        evt.tgid,
+                        100,  // Max score
+                        {"Attempt to delete ransomware protection snapshots detected."}
+                    );
+                }
+            }
+        }
+
+
+        // ═══════════════════════════════════════════════════════════
+        // CHECK CANARY FILES (Instant Trigger)
+        // ═══════════════════════════════════════════════════════════
+        
+        if (canary_system_ && canary_system_->IsCanaryFile(filename)) {
+            std::cout << "🚨 CANARY FILE TRIGGERED!" << std::endl;
+            std::cout << "   File: " << filename << std::endl;
+            std::cout << "   Process: " << proc_name << " (PID " << evt.tgid << ")" << std::endl;
+            
+            // INSTANT KILL - No scoring, no delay
+            KillProcess(evt.tgid);
+            
+            // Quarantine
+            if (quarantine_manager_) {
+                quarantine_manager_->QuarantineProcess(evt.tgid, "CANARY_FILE_TRIGGERED");
+            }
+            
+            // Rollback filesystem
+            if (snapshot_system_) {
+                std::cout << "🔄 Rolling back filesystem..." << std::endl;
+                if (snapshot_system_->RollbackToLatestSnapshot()) {
+                    std::cout << "✅ Filesystem rolled back successfully!" << std::endl;
+                }
+            }
+            
+            // Alert
+            if (notification_manager_) {
+                notification_manager_->SendThreatAlert(
+                    "CANARY_FILE_TRIGGERED",
+                    proc_name,
+                    evt.tgid,
+                    100,  // Max score
+                    {"Hidden canary file accessed - ransomware detected instantly"}
+                );
+            }
+            
+            threats_detected_++;
+            continue;  // Skip further processing
+        }
+
+
+        //Ransomware
         bool is_sensitive = IsSensitiveFile(filename);
+        if (ransomware_detector_ && is_sensitive) {
+            // Track for ransomware detection
+            ransomware_detector_->TrackFileOperation(evt.tgid, filename, "write");
+            int score = ransomware_detector_->AnalyzeProcess(evt.tgid);
+
+            // If ransomware detected
+            if (score >= config_.block_threshold) {
+                auto indicators = ransomware_detector_->GetThreatIndicators(evt.tgid);
+
+                // Handle threat (kill, quarantine, rollback)
+                threats_detected_++;
+                HandleThreat(evt.tgid, "Ransomware", score, indicators);
+            }
+        }
+
+
+
         
         if (event_count <= 20) {
             std::cout << "[DEBUG] IsSensitiveFile(" << filename << ") = " 
@@ -1075,7 +1300,7 @@ void KoraAVDaemon::RunPeriodicAnalysis() {
 void KoraAVDaemon::HandleThreat(uint32_t tgid, const std::string& threat_type,
                                 int score, const std::vector<std::string>& indicators) {
 
-
+    // Check if already handled (deduplication)
     if (IsThreatAlreadyHandled(tgid, threat_type)) {
         return;
     }
@@ -1084,16 +1309,16 @@ void KoraAVDaemon::HandleThreat(uint32_t tgid, const std::string& threat_type,
 
     // Log the threat first
     LogThreat(tgid, threat_type, score, indicators);
-    
+
     // Get process info for notification
     std::string process_name = GetProcessName(tgid);
     std::string process_cmd = GetProcessCommandLine(tgid);
-    
+
     // Send desktop notification FIRST (before console output)
     if (notification_manager_) {
         notification_manager_->SendThreatAlert(threat_type, process_name, tgid, score, indicators);
     }
-    
+
     // Display threat notification (console)
     std::cout << "\n";
     std::cout << "═══════════════════════════════════════════════════════════" << std::endl;
@@ -1110,18 +1335,24 @@ void KoraAVDaemon::HandleThreat(uint32_t tgid, const std::string& threat_type,
         std::cout << "  • " << indicator << std::endl;
     }
     std::cout << "───────────────────────────────────────────────────────────" << std::endl;
-    
-    // Determine action based on score and config
+
+    // ═══════════════════════════════════════════════════════════
+    // RESPONSE DETERMINATION (Score-based + Threat-specific)
+    // ═══════════════════════════════════════════════════════════
+
+    // CRITICAL THREAT (≥96) - Most aggressive response
     if (score >= config_.lockdown_threshold && config_.auto_lockdown) {
         std::cout << "⚠️  CRITICAL THREAT (Score ≥" << config_.lockdown_threshold << ")" << std::endl;
         std::cout << "Action:       SYSTEM LOCKDOWN" << std::endl;
         std::cout << "═══════════════════════════════════════════════════════════\n" << std::endl;
-        
+
         // Kill process first
-        KillProcess(tgid);
-        
+        if (config_.auto_kill) {
+            KillProcess(tgid);
+        }
+
         // Quarantine
-        if (quarantine_manager_) {
+        if (config_.auto_quarantine && quarantine_manager_) {
             std::string quarantine_path = quarantine_manager_->QuarantineProcess(tgid, threat_type);
             if (!quarantine_path.empty()) {
                 std::cout << "✓ Malware quarantined to: " << quarantine_path << std::endl;
@@ -1130,51 +1361,129 @@ void KoraAVDaemon::HandleThreat(uint32_t tgid, const std::string& threat_type,
                 }
             }
         }
-        
-        // Lockdown system
+
+        // System lockdown (OPTIONAL - user must enable)
         LockdownSystem();
-        
-        // Send lockdown notification
+
         if (notification_manager_) {
             notification_manager_->SendLockdownNotification();
         }
-        
-    } else if (score >= config_.block_threshold) {
+    }
+
+    // HIGH THREAT (≥81) - Kill + Quarantine + Situational Network Block
+    else if (score >= config_.block_threshold) {
         std::cout << "⚠️  HIGH THREAT (Score ≥" << config_.block_threshold << ")" << std::endl;
-        std::cout << "Action:       KILL & QUARANTINE" << std::endl;
-        std::cout << "═══════════════════════════════════════════════════════════\n" << std::endl;
-        
-        // Block network if configured
-        if (config_.auto_block_network) {
-            BlockProcessNetwork(tgid);
-        }
-        
+        std::cout << "Action:       KILL + QUARANTINE";
+
         // Kill process
         if (config_.auto_kill) {
             KillProcess(tgid);
         }
-        
-        // Quarantine the malware
-        if (quarantine_manager_) {
+
+        // Quarantine
+        if (config_.auto_quarantine && quarantine_manager_) {
             std::string quarantine_path = quarantine_manager_->QuarantineProcess(tgid, threat_type);
             if (!quarantine_path.empty()) {
-                std::cout << "✓ Malware quarantined to: " << quarantine_path << std::endl;
+                std::cout << " + QUARANTINED" << std::endl;
                 if (notification_manager_) {
                     notification_manager_->SendQuarantineNotification(threat_type, process_name, quarantine_path);
                 }
+            } else {
+                std::cout << std::endl;
+            }
+        } else {
+            std::cout << std::endl;
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        // ROLLBACK FILESYSTEM FOR RANSOMWARE
+        // ═══════════════════════════════════════════════════════════
+        if (threat_type == "Ransomware" && snapshot_system_) {
+            std::cout << "🔄 Initiating filesystem rollback..." << std::endl;
+
+            bool rolled_back = snapshot_system_->RollbackToLatestSnapshot();
+
+            if (rolled_back) {
+                std::cout << "✅ Filesystem rolled back successfully!" << std::endl;
+                std::cout << "   Max data loss: 5 minutes" << std::endl;
+                
+                // Alert about rollback
+                if (notification_manager_) {
+                    notification_manager_->SendThreatAlert(
+                        "FILESYSTEM_ROLLBACK",
+                        process_name,
+                        tgid,
+                        score,
+                        {"Filesystem rolled back to latest snapshot", "Max 5 minutes of data loss"}
+                    );
+                }
+            } else {
+                std::cerr << "❌ Rollback failed - :(" << std::endl;
             }
         }
-        
-        std::cout << "✓ Threat neutralized and quarantined" << std::endl;
-        
-    } else if (score >= config_.alert_threshold) {
+
+
+        // ═══════════════════════════════════════════════════════════
+        // SITUATIONAL NETWORK BLOCKING
+        // ═══════════════════════════════════════════════════════════
+        bool should_block_network = false;
+        if (threat_type == "InfoStealer" && config_.auto_block_network_infostealer) {
+            // Check if process has active network connections
+            if (HasActiveNetworkConnections(tgid)) {
+                should_block_network = true;
+                std::cout << "  → Network blocked: Active exfiltration detected" << std::endl;
+            }
+        }
+        else if (threat_type == "C2_Communication" && config_.auto_block_network_c2) {
+            should_block_network = true;
+            std::cout << "  → Network blocked: C2 communication detected" << std::endl;
+        }
+        else if (threat_type == "ClickFix" && config_.auto_block_network_clickfix) {
+            should_block_network = true;
+            std::cout << "  → Network blocked: ClickFix attack" << std::endl;
+        }
+        else if (threat_type == "Ransomware" && config_.auto_block_network_ransomware) {
+            // Usually false - ransomware is already killed
+            should_block_network = true;
+            std::cout << "  → Network blocked: Ransomware" << std::endl;
+        }
+
+        if (should_block_network) {
+            BlockProcessNetwork(tgid);
+        }
+
+        std::cout << "═══════════════════════════════════════════════════════════\n" << std::endl;
+    }
+
+    // SUSPICIOUS ACTIVITY (≥61) - Alert Only
+    else if (score >= config_.alert_threshold) {
         std::cout << "⚠️  SUSPICIOUS ACTIVITY (Score ≥" << config_.alert_threshold << ")" << std::endl;
         std::cout << "Action:       MONITORING (no action taken)" << std::endl;
         std::cout << "═══════════════════════════════════════════════════════════\n" << std::endl;
-        std::cout << "ℹ️  Process is being monitored. Will auto-kill if threat score increases." << std::endl;
     }
-    
-    std::cout << std::endl;
+}
+
+// Helper function to check for active network connections
+bool KoraAVDaemon::HasActiveNetworkConnections(uint32_t tgid) {
+    // Check /proc/[pid]/net/tcp for established connections
+    std::string tcp_path = "/proc/" + std::to_string(tgid) + "/net/tcp";
+    std::ifstream tcp_file(tcp_path);
+
+    if (!tcp_file) {
+        return false;
+    }
+
+    std::string line;
+    std::getline(tcp_file, line);  // Skip header
+
+    while (std::getline(tcp_file, line)) {
+        // Check if connection state is ESTABLISHED (01)
+        if (line.find(" 01 ") != std::string::npos) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 void KoraAVDaemon::KillProcess(uint32_t tgid) {
