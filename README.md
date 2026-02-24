@@ -286,7 +286,7 @@ I happily welcome contributions! Here's how you can help:
 6. Open a Pull Request
 
 ### Code Style
-- C++17 standard - (planning on moving towards C++23 eventually)
+- C++17 standard
 - Follow existing code formatting
 - Add comments to help let me know what's happening.
 - Write unit tests for testing out the new features
@@ -297,6 +297,6 @@ __ __
 ## Support
 
 - **Documentation:** [WIP]()
-- **Discord:** [Maybe/TBD]()
+- **Discord:** [https://discord.gg/Kora](https://discord.gg/wYeawwM7yp)
 - **Email:** therealori@duck.com
 __ __
