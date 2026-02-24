@@ -487,59 +487,138 @@ create_hash_database() {
 create_config() {
     print_step "Creating KoraAV Configuration File"
 
-    cat > "$CONFIG_DIR/koraav.conf" << 'EOF'
-# KoraAV Config
+    cat > /etc/koraav/koraav.conf << 'EOF'
+# KoraAV Config File
+# Reload/Restart daemon after edits.
 
-[scanning]
-enable_hash_scan = true
-enable_yara_scan = true
-enable_heuristic_scan = true
-enable_static_analysis = true
-enable_archive_scan = true
-max_file_size = 104857600  # 100MB
-max_scan_depth = 32
-thread_count = 4
-
-[realtime]
-# Real-time protection
+[monitoring]
 enable_file_monitor = true
 enable_process_monitor = true
 enable_network_monitor = true
-enable_behavioral_analysis = true
 
-# Behavioral detection
+[detection]
 detect_infostealer = true
 detect_ransomware = true
 detect_clickfix = true
+detect_c2 = true
 
-[paths]
-exclude_paths = /proc,/sys,/dev,/tmp/.X11-unix
-sensitive_paths = /home/*/.ssh,/home/*/.gnupg,/home/*/.mozilla,/home/*/.config/google-chrome,/home/*/Documents,/home/*/Downloads,/root/.ssh,/root/.gnupg
+# Canary file system (hidden decoy files)
+enable_canary_files = true
+canaries_per_directory = 3
+
+# Filesystem snapshots (rollback protection)
+enable_snapshots = true
+snapshot_interval_minutes = 5
+max_snapshots = 6
 
 [thresholds]
 alert_threshold = 61
 block_threshold = 81
 lockdown_threshold = 96
 
+# Ransomware detection thresholds
+entropy_delta_threshold = 2.5
+max_ops_per_second = 50.0
+max_files_touched = 20
+max_directories = 10
+max_renames = 15
+extension_change_threshold = 4
+time_window_seconds = 10.0
+
 [response]
 auto_kill = true
-auto_block_network = true
-auto_lockdown = false  # Require manual confirmation if false
+auto_quarantine = true
+
+# Situational network blocking (per threat type)
+auto_block_network_infostealer = true
+auto_block_network_c2 = true
+auto_block_network_clickfix = false
+auto_block_network_ransomware = false
+
+# Automatic filesystem rollback
+auto_rollback_on_ransomware = true
+
+# System lockdown (OPTIONAL - default OFF)
+# WARNING: Kills non-essential processes, disables USB, blocks network
+auto_lockdown = false
+
+[snapshots]
+# Snapshot storage directory
+snapshot_dir = /.snapshots/koraav
+# Filesystem type detection (auto recommended)
+snapshot_type = auto
+# Total retention time (6 snapshots every 5 minutes = 30min)
+snapshot_retention_minutes = 30
 
 [logging]
-log_level = INFO
 log_path = /opt/koraav/var/logs
-max_log_size = 104857600
-max_log_files = 10
+enable_detailed_logging = false
 
-[database]
-hash_db_path = /opt/koraav/var/db/hashes.db
-yara_rules_path = /opt/koraav/share/signatures/yara-rules
+[yara]
+enable_yara = true
+rules_path = /opt/koraav/share/signatures/yara-rules
+scan_on_execution = true
+scan_on_download = true
+
+[whitelist]
+process_whitelist_file = /etc/koraav/process-whitelist.conf
 EOF
 
     chmod 644 "$CONFIG_DIR/koraav.conf"
     print_success "Configuration created"
 }
+
+
+
+
+
+create_process_whitelist() {
+    cat > /etc/koraav/process-whitelist.conf << 'EOF'
+# Process Whitelist - one per line
+# These processes will not be monitored for ransomware behavior
+
+# Package managers
+apt
+apt-get
+dpkg
+rpm
+yum
+dnf
+pacman
+
+# System services
+systemd
+systemd-journald
+rsyslogd
+
+# Backup software
+rsync
+rsnapshot
+duplicity
+restic
+borg
+
+# File system utilities
+logrotate
+updatedb
+
+# Database systems
+mysqld
+postgres
+mongod
+redis-server
+
+# Our own daemon
+korad
+koraav
+EOF
+
+    chmod 644 "/etc/koraav/process-whitelist.conf"
+    echo "✓ Process whitelist created: /etc/koraav/process-whitelist.conf"
+}
+
+
+
 
 create_systemd_service() {
     print_step "Creating Korad Systemd Service"
@@ -782,6 +861,7 @@ main() {
     install_files
     create_hash_database
     create_config
+    create_process_whitelist
     create_systemd_service
     enable_service
     create_uninstaller
@@ -796,3 +876,4 @@ trap 'print_error "Installation failed at line $LINENO. Check $LOG_FILE for deta
 
 # Run
 main "$@"
+systemctl start korad && systemctl status korad
