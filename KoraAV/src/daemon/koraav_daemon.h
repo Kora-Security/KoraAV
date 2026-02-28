@@ -10,6 +10,7 @@
 #include "../realtime-protection/behavioral-analysis/canary_file_system.h"
 #include "../common/quarantine_manager.h"
 #include "../common/notification_manager.h"
+#include "../common/yara_manager.h"
 #include <memory>
 #include <atomic>
 #include <thread>
@@ -209,6 +210,8 @@ namespace daemon {
         std::atomic<uint64_t> network_events_received_{0};
         std::atomic<uint64_t> threats_detected_{0};
 
+
+        YaraManager* yara_manager_;
 
         // Initialization
         bool LoadConfiguration(const std::string& config_path);
