@@ -23,6 +23,25 @@
 #include <condition_variable>
 #include <unordered_set>
 #include <chrono>
+#include <unordered_map>
+#include <linux/limits.h>
+
+
+struct YaraCacheEntry {
+    time_t mtime;
+    ino_t inode;
+    bool is_clean;
+    std::chrono::steady_clock::time_point cached_at;
+};
+
+static std::unordered_map<std::string, YaraCacheEntry> yara_scan_cache;
+static std::mutex yara_cache_mutex;
+static constexpr size_t MAX_YARA_CACHE_SIZE = 10000;
+
+
+
+
+
 
 namespace koraav {
 namespace daemon {
@@ -158,7 +177,8 @@ KoraAVDaemon::KoraAVDaemon()
       process_events_ringbuf_(nullptr),
       network_events_ringbuf_(nullptr),
       running_(false),
-      initialized_(false) {
+      initialized_(false),
+      yara_manager_(nullptr) {
 }
 
 KoraAVDaemon::~KoraAVDaemon() {
@@ -268,6 +288,31 @@ void KoraAVDaemon::Run() {
     }
     
     std::cout << "Starting KoraAV Real-Time Protection..." << std::endl;
+
+
+    // Start use of yara rules
+    if (config_.enable_yara) {
+        try {
+            yara_manager_ = &YaraManager::Instance();  // ✅ Get singleton instance
+            if (!yara_manager_->IsReady()) {
+                if (!yara_manager_->Initialize()) {
+                    std::cerr << "⚠️  YARA initialization failed" << std::endl;
+                    yara_manager_ = nullptr;
+                } else if (!yara_manager_->LoadRules(config_.yara_rules_path)) {
+                    std::cerr << "⚠️  YARA rules loading failed" << std::endl;
+                    yara_manager_ = nullptr;
+                } else {
+                    std::cout << "✓ YARA scanner initialized" << std::endl;
+                }
+            } else {
+                // Already initialized (singleton)
+                std::cout << "✓ YARA scanner ready" << std::endl;
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "⚠️  YARA error: " << e.what() << std::endl;
+            yara_manager_ = nullptr;
+        }
+    }
     
     // Start detection engines
     // Ransomware detector is now passive (no separate thread needed)
@@ -1027,6 +1072,50 @@ void KoraAVDaemon::AnalyzeFileEvents() {
         }
 
 
+
+        // ═══════════════════════════════════════════════════════════
+        // YARA SIGNATURE SCAN (On Download/Write)
+        // ═══════════════════════════════════════════════════════════
+
+        if (yara_manager_ && config_.yara_scan_on_download) {
+            // Check if this is a newly written file (download scenario)
+            // We can scan on close() events or completed writes
+
+            std::vector<std::string> yara_matches = yara_manager_->ScanFile(filename);
+            if (!yara_matches.empty()) {
+                std::cout << "🚨 YARA DETECTION!" << std::endl;
+                std::cout << "   File: " << filename << std::endl;
+                std::cout << "   Matches: " << yara_matches.size() << std::endl;
+
+                for (const auto& match : yara_matches) {
+                    std::cout << "   - " << match << std::endl;
+                }
+
+                // Kill process
+                KillProcess(evt.tgid);
+
+                // Quarantine
+                if (quarantine_manager_) {
+                    quarantine_manager_->QuarantineFile(filename, "YARA:" + yara_matches[0]);
+                }
+
+                // Alert
+                if (notification_manager_) {
+                    notification_manager_->SendThreatAlert(
+                        "YARA_DETECTION",
+                        proc_name,
+                        evt.tgid,
+                        100,  // Signature match = definite malware
+                        yara_matches
+                    );
+                }
+
+                threats_detected_++;
+                continue;  // Skip further processing
+            }
+        }
+
+
         //Ransomware
         bool is_sensitive = IsSensitiveFile(filename);
         if (ransomware_detector_ && is_sensitive) {
@@ -1147,6 +1236,161 @@ void KoraAVDaemon::AnalyzeProcessEvents() {
                 HandleThreat(evt.tgid, "ClickFix", score, indicators);
             }
         }
+        // ═══════════════════════════════════════════════════════════
+        // YARA SCAN ON EXECUTION
+        // ═══════════════════════════════════════════════════════════
+
+        if (yara_manager_ && config_.yara_scan_on_execution) {
+            std::string exe_path = "/proc/" + std::to_string(evt.tgid) + "/exe";
+            char real_path[PATH_MAX];
+            ssize_t len = readlink(exe_path.c_str(), real_path, sizeof(real_path) - 1);
+
+            if (len != -1) {
+                real_path[len] = '\0';
+                std::string executable(real_path);
+
+                bool should_scan = true;
+                bool cached_malware = false;
+
+                // CHECK CACHE
+                {
+                    std::lock_guard<std::mutex> lock(yara_cache_mutex);
+
+                    auto it = yara_scan_cache.find(executable);
+                    if (it != yara_scan_cache.end()) {
+                        // Cache entry exists - verify file hasn't changed
+                        struct stat st;
+                        if (stat(executable.c_str(), &st) == 0) {
+                            // Check if file was modified since last scan
+                            if (it->second.mtime == st.st_mtime &&
+                                it->second.inode == st.st_ino) {
+                                // File unchanged - trust cache
+                                should_scan = false;
+
+                                if (!it->second.is_clean) {
+                                    // Cache says it's malware - treat as fresh detection
+                                    cached_malware = true;
+                                }
+                            // else: it's clean, skip scanning entirely
+                            } else {
+                                // File modified - invalidate cache entry
+                                yara_scan_cache.erase(it);
+                                should_scan = true;
+                            }
+
+                        } else {
+                            // Can't stat file - invalidate cache and rescan
+                            yara_scan_cache.erase(it);
+                            should_scan = true;
+                        }
+                    }
+                    // else: not in cache, must scan
+                }
+
+                // ─────────────────────────────────────────────────────────
+                // HANDLE CACHED MALWARE (no need to re-scan)
+                // ─────────────────────────────────────────────────────────
+                if (cached_malware) {
+                    std::cout << "🚨 YARA DETECTION (CACHED)!" << std::endl;
+                    std::cout << "   Binary: " << executable << std::endl;
+                    std::cout << "   PID: " << evt.tgid << std::endl;
+                    std::cout << "   [Previously detected malware re-executed]" << std::endl;
+
+                    KillProcess(evt.tgid);
+
+                    if (quarantine_manager_) {
+                        quarantine_manager_->QuarantineFile(executable, "YARA:CACHED_MALWARE");
+                    }
+
+                    if (notification_manager_) {
+                        notification_manager_->SendThreatAlert(
+                            "YARA_EXECUTION_BLOCKED",
+                            executable,
+                            evt.tgid,
+                            100,
+                            {"Previously detected malware re-executed"}
+                        );
+                    }
+
+                    threats_detected_++;
+                    continue;
+                }
+
+                // ─────────────────────────────────────────────────────────
+                // SCAN FILE (cache miss or invalidated)
+                // ─────────────────────────────────────────────────────────
+                if (should_scan) {
+                    std::vector<std::string> yara_matches = yara_manager_->ScanFile(executable);
+                    bool is_clean = yara_matches.empty();
+
+                    // ─────────────────────────────────────────────────
+                    // UPDATE CACHE
+                    // ─────────────────────────────────────────────────
+                    {
+                        std::lock_guard<std::mutex> lock(yara_cache_mutex);
+
+                        // Cache size limit - implement LRU eviction
+                        if (yara_scan_cache.size() >= MAX_YARA_CACHE_SIZE) {
+                            // Find oldest cache entry
+                            auto oldest = yara_scan_cache.begin();
+                            for (auto it = yara_scan_cache.begin(); it != yara_scan_cache.end(); ++it) {
+                                if (it->second.cached_at < oldest->second.cached_at) {
+                                    oldest = it;
+                                }
+                            }
+                            yara_scan_cache.erase(oldest);
+                        }
+
+                        // Add/update cache entry
+                        struct stat st;
+                        if (stat(executable.c_str(), &st) == 0) {
+                            yara_scan_cache[executable] = {
+                                st.st_mtime,
+                                st.st_ino,
+                                is_clean,
+                                std::chrono::steady_clock::now()
+                            };
+                        }
+                    }
+
+                    // ─────────────────────────────────────────────────
+                    // HANDLE MALWARE DETECTION
+                    // ─────────────────────────────────────────────────
+                    if (!is_clean) {
+                        std::cout << "🚨 YARA DETECTION ON EXECUTION!" << std::endl;
+                        std::cout << "   Binary: " << executable << std::endl;
+                        std::cout << "   PID: " << evt.tgid << std::endl;
+                        std::cout << "   Matches: " << yara_matches.size() << std::endl;
+
+                        for (const auto& match : yara_matches) {
+                            std::cout << "   - " << match << std::endl;
+                        }
+
+                        KillProcess(evt.tgid);
+
+                        if (quarantine_manager_) {
+                            quarantine_manager_->QuarantineFile(executable, "YARA:" + yara_matches[0]);
+                        }
+
+                        if (notification_manager_) {
+                            notification_manager_->SendThreatAlert(
+                                "YARA_EXECUTION_BLOCKED",
+                                executable,
+                                evt.tgid,
+                                100,
+                                yara_matches
+                            );
+                        }
+
+                        threats_detected_++;
+                        continue;
+                    }
+                    // else: is_clean = true, cached for future, continue to next event
+
+                }
+                // else: should_scan = false (clean cache hit), continue to next event
+            }
+        }
     }
 }
 
@@ -1241,6 +1485,8 @@ void KoraAVDaemon::RunPeriodicAnalysis() {
 
         // ── Status report every 60 seconds ──────────────────────────────────
         if (tick % 12 == 0) {
+            std::lock_guard<std::mutex> lock(yara_cache_mutex);
+            std::cout << "  YARA Cache: " << yara_scan_cache.size() << " entries" << std::endl;
             std::cout << "\n📊 [Status] Events received — "
                       << "File: " << file_events_received_.load()
                       << "  Process: " << process_events_received_.load()
@@ -1616,6 +1862,7 @@ uint64_t KoraAVDaemon::GetProcessStartTime(uint32_t tgid) {
     iss >> starttime;
     return starttime;
 }
+
 
 
 
