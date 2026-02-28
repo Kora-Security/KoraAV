@@ -33,13 +33,13 @@ bool FileScanner::Initialize(const ScanConfig& config) {
     
     // Initialize sub-scanners
     if (config_.use_hash_db) {
-        if (!hash_scanner_->LoadDatabase("/opt/koraav/data/signatures/hashes.db")) {
+        if (!hash_scanner_->LoadDatabase("/opt/koraav/var/db/hashes.db")) {
             std::cerr << "Warning: Failed to load hash database" << std::endl;
         }
     }
     
     if (config_.use_yara) {
-        if (!yara_scanner_->LoadRules("/opt/koraav/data/signatures/yara-rules/")) {
+        if (!yara_scanner_->LoadRules("/opt/koraav/share/signatures/yara-rules/")) {
             std::cerr << "Warning: Failed to load YARA rules" << std::endl;
         }
     }
