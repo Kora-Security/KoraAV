@@ -368,8 +368,8 @@ int HandleRules(int argc, char** argv) {
         std::cout << "=== Active YARA Rules ===" << std::endl;
         std::cout << "\nSystem Rules (/opt/koraav/share/signatures/yara-rules/):" << std::endl;
         system("ls -1 /opt/koraav/share/signatures/yara-rules/*.yar 2>/dev/null | xargs -n1 basename");
-        std::cout << "\nUser Rules (/opt/koraav/share/signatures/yara-rules/user/):" << std::endl;
-        system("ls -1 /opt/koraav/share/signatures/yara-rules/user/*.yar 2>/dev/null | xargs -n1 basename || echo '  No user rules'");
+        std::cout << "\nUser Rules (/opt/koraav/share/signatures/yara-rules/custom/):" << std::endl;
+        system("ls -1 /opt/koraav/share/signatures/yara-rules/custom/*.yar 2>/dev/null | xargs -n1 basename || echo '  No user rules'");
         return 0;
     }
     else if (cmd == "update") {
