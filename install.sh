@@ -405,7 +405,7 @@ install_files() {
     fi
 
     print_info "Creating directory structure..."
-    mkdir -p "$INSTALL_DIR"/{bin,lib/bpf,etc/rules,var/{db,logs,quarantine,run},share/doc}
+    mkdir -p "$INSTALL_DIR"/{bin,lib/bpf,var/{db,logs,quarantine,run},share/doc}
     mkdir -p "$CONFIG_DIR"
     mkdir -p /var/log/koraav
 
@@ -543,12 +543,10 @@ auto_rollback_on_ransomware = true
 auto_lockdown = false
 
 [snapshots]
-# Snapshot storage directory
+# Snapshot storage directory & detection type
 snapshot_dir = /.snapshots/koraav
-# Filesystem type detection (auto recommended)
 snapshot_type = auto
-# Total retention time (6 snapshots every 5 minutes = 30min)
-snapshot_retention_minutes = 30
+
 
 [logging]
 log_path = /opt/koraav/var/logs
@@ -759,6 +757,7 @@ set -e
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m'
 
 if [ "$EUID" -ne 0 ]; then
@@ -766,7 +765,10 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-echo -e "${YELLOW}KoraAV Uninstaller${NC}"
+echo "═══════════════════════════════════════════════════════════"
+echo -e "${YELLOW}      KoraAV Uninstaller${NC}"
+echo "═══════════════════════════════════════════════════════════"
+echo ""
 echo "This will completely remove KoraAV from your system"
 echo ""
 echo -n "Continue? Type 'yes' to confirm: "
@@ -777,24 +779,184 @@ if [ "$response" != "yes" ]; then
     exit 0
 fi
 
-echo "Uninstalling KoraAV..."
+echo ""
+echo "Stopping KoraAV service..."
 systemctl stop korad.service 2>/dev/null || true
 systemctl disable korad.service 2>/dev/null || true
+
+echo "Removing systemd service..."
 rm -f /etc/systemd/system/korad.service
 systemctl daemon-reload
+
+echo "Removing binaries..."
 rm -f /usr/local/bin/koraav
 rm -f /usr/local/bin/korad
-rm -rf /etc/koraav
+
+
+# Cleaning up canary files
+echo ""
+echo "Cleaning up canary files..."
+canary_count=0
+
+# Search all protected directories for canary files
+for dir in /home/*/  /home/*/Documents /home/*/Downloads /home/*/Desktop \
+           /home/*/Pictures /home/*/Videos /home/*/.config \
+           /var /var/www /srv /opt /etc; do
+    if [ -d "$dir" ]; then
+        # Find and remove canaries in this directory
+        while IFS= read -r -d '' canary; do
+            echo "  Removing: $canary"
+            rm -f "$canary"
+            ((canary_count++))
+        done < <(find "$dir" -maxdepth 1 -name ".koraav-*" -type f -print0 2>/dev/null)
+    fi
+done
+
+if [ "$canary_count" -gt 0 ]; then
+    echo -e "${GREEN}  Removed $canary_count canary files${NC}"
+else
+    echo "No canary files found"
+fi
+
+
+# Cleaning up snapshots
+echo ""
+echo "Checking for snapshots..."
+
+if [ -d "/.snapshots/koraav" ]; then
+    # Calculate size and count
+    snapshot_size=$(du -sh /.snapshots/koraav 2>/dev/null | cut -f1 || echo "unknown")
+    snapshot_count=$(find /.snapshots/koraav -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l || echo "0")
+
+    echo -e "${BLUE}Snapshot Information:${NC}"
+    echo "  Location: /.snapshots/koraav"
+    echo "  Size: $snapshot_size"
+    echo "  Snapshots: $snapshot_count"
+    echo ""
+
+    if [ "$snapshot_count" -gt 0 ]; then
+        echo -n "Delete all snapshots? [y/N] "
+        read -r -n 1 snapshot_response
+        echo
+
+        if [[ $snapshot_response =~ ^[Yy]$ ]]; then
+            echo "  Removing immutable flags..."
+            chattr -i -R /.snapshots/koraav 2>/dev/null || true
+
+            echo "  Deleting snapshots..."
+            rm -rf /.snapshots/koraav
+
+            # Remove parent directory if empty
+            if [ -d "/.snapshots" ] && [ -z "$(ls -A /.snapshots 2>/dev/null)" ]; then
+                rmdir /.snapshots 2>/dev/null || true
+                echo "  Removed empty /.snapshots directory"
+            fi
+
+            echo -e "${GREEN} Snapshots removed (freed $snapshot_size)${NC}"
+        else
+            echo -e "${YELLOW} Snapshots kept at /.snapshots/koraav${NC}"
+            echo "     You can manually delete them later:"
+            echo "     sudo chattr -i -R /.snapshots/koraav"
+            echo "     sudo rm -rf /.snapshots/koraav"
+        fi
+    fi
+else
+    echo "No snapshots found"
+fi
+
+
+# Cleaning up quarantine directory
+echo ""
+echo "Checking quarantine..."
+
+if [ -d "/var/lib/koraav/quarantine" ]; then
+    quarantine_count=$(find /var/lib/koraav/quarantine -type f 2>/dev/null | wc -l || echo "0")
+
+    if [ "$quarantine_count" -gt 0 ]; then
+        echo -e "${BLUE}Found $quarantine_count quarantined file(s)${NC}"
+        echo -n "Delete quarantined files? [y/N] "
+        read -r -n 1 quarantine_response
+        echo
+
+        if [[ $quarantine_response =~ ^[Yy]$ ]]; then
+            rm -rf /var/lib/koraav/quarantine
+            echo -e "${GREEN} Quarantine cleared${NC}"
+        else
+            echo -e "${YELLOW} Keeping quarantined files at /var/lib/koraav/quarantine${NC}"
+        fi
+    fi
+fi
+
+
+# Configuration and logs
+echo ""
+
+# Config
+if [ -d "/etc/koraav" ]; then
+    echo -n "Remove configuration files? [y/N] "
+    read -r -n 1 config_response
+    echo
+    if [[ $config_response =~ ^[Yy]$ ]]; then
+        rm -rf /etc/koraav
+        echo -e "${GREEN}  Configuration removed${NC}"
+    else
+        echo -e "${YELLOW} Configuration kept at /etc/koraav${NC}"
+    fi
+fi
+
+# Logs
+if [ -d "/var/log/koraav" ]; then
+    log_size=$(du -sh /var/log/koraav 2>/dev/null | cut -f1 || echo "unknown")
+    echo ""
+    echo -e "${BLUE}Log files size: $log_size${NC}"
+    echo -n "Remove log files? [y/N] "
+    read -r -n 1 log_response
+    echo
+    if [[ $log_response =~ ^[Yy]$ ]]; then
+        rm -rf /var/log/koraav
+        echo -e "${GREEN}  Logs removed${NC}"
+    else
+        echo -e "${YELLOW}  Logs kept at /var/log/koraav${NC}"
+    fi
+fi
+
+
+# Removing remaining directories
+echo ""
+echo "Removing installation directory..."
 rm -rf /opt/koraav
-rm -rf /var/log/koraav
+
+echo "Removing data directory..."
+rm -rf /var/lib/koraav 2>/dev/null || true
 
 # Remove koraav user
 if id -u koraav >/dev/null 2>&1; then
+    echo "Removing koraav user..."
     userdel koraav 2>/dev/null || true
-    echo "✓ Removed koraav user"
 fi
 
-echo -e "${GREEN}✓ KoraAV has been removed${NC}"
+echo ""
+echo "═══════════════════════════════════════════════════════════"
+echo -e "${GREEN} KoraAV has been removed${NC}"
+echo "═══════════════════════════════════════════════════════════"
+echo ""
+
+# Show what was kept (if anything)
+kept_items=()
+[ -d "/etc/koraav" ] && kept_items+=("/etc/koraav (config)")
+[ -d "/var/log/koraav" ] && kept_items+=("/var/log/koraav (logs)")
+[ -d "/.snapshots/koraav" ] && kept_items+=("/.snapshots/koraav (snapshots)")
+[ -d "/var/lib/koraav/quarantine" ] && kept_items+=("/var/lib/koraav/quarantine")
+
+if [ ${#kept_items[@]} -gt 0 ]; then
+    echo -e "${YELLOW}Kept files:${NC}"
+    for item in "${kept_items[@]}"; do
+        echo "  • $item"
+    done
+    echo ""
+fi
+
+echo "Thank you for using KoraAV!"
 UNINSTALL_SCRIPT
 
     chmod 755 "$INSTALL_DIR/uninstall.sh"
@@ -867,7 +1029,6 @@ main() {
     create_uninstaller
 
     cleanup
-
     print_summary
 }
 
