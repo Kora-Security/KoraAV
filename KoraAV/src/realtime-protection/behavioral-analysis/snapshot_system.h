@@ -73,7 +73,7 @@ namespace koraav {
 
             // Configuration
             void SetMaxSnapshots(int max) { max_snapshots_ = max; }
-            void SetSnapshotInterval(int minutes) { snapshot_interval_minutes_ = minutes;
+            void SetSnapshotInterval(int minutes) { snapshot_interval_minutes_ = minutes; }
 
             // Get filesystem info
             FilesystemType GetFilesystemType() const { return fs_type_; }
