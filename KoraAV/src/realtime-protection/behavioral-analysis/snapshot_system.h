@@ -54,7 +54,7 @@ namespace koraav {
             ~SnapshotSystem();
 
             // Initialize and detect filesystem
-            bool Initialize();
+            bool Initialize(int max_snapshots, int snapshot_interval_minutes, const std::string& snapshot_dir);
 
             // Create new snapshot
             std::string CreateSnapshot();
@@ -73,8 +73,7 @@ namespace koraav {
 
             // Configuration
             void SetMaxSnapshots(int max) { max_snapshots_ = max; }
-            void SetSnapshotInterval(int minutes) { snapshot_interval_minutes_ = minutes; }
-            void SetSnapshotRetention(int minutes) { snapshot_retention_minutes_ = minutes; }
+            void SetSnapshotInterval(int minutes) { snapshot_interval_minutes_ = minutes;
 
             // Get filesystem info
             FilesystemType GetFilesystemType() const { return fs_type_; }
@@ -119,13 +118,11 @@ namespace koraav {
             std::string root_mount_;
             std::string snapshot_dir_;
 
+            int max_snapshots_;
+            int snapshot_interval_minutes_;
+
             std::vector<SnapshotEntry> active_snapshots_;
             mutable std::mutex snapshots_mutex_;
-
-            // Configuration
-            int max_snapshots_ = 6;
-            int snapshot_interval_minutes_ = 5;
-            int snapshot_retention_minutes_ = 30;
 
             // Statistics
             struct Stats {
