@@ -87,7 +87,6 @@ namespace daemon {
             int max_snapshots = 6;
             std::string snapshot_dir = "/.snapshots/koraav";
             std::string snapshot_type = "auto";
-            int snapshot_retention_minutes = 30;
 
             // Thresholds
             int alert_threshold = 61;
@@ -112,13 +111,6 @@ namespace daemon {
             bool auto_block_network_ransomware = false;
             bool auto_rollback_on_ransomware = true;  // NEW
             bool auto_lockdown = false;
-
-            // Legacy ransomware settings (kept for compatibility)
-            // int ransomware_files_before_action = 4;
-            // double ransomware_max_ops_per_second = 50.0;
-            // int ransomware_max_directories = 10;
-            // int ransomware_max_renames = 15;
-            // double ransomware_time_window = 10.0;
 
             // Logging
             std::string log_path = "/opt/koraav/var/logs";
@@ -149,9 +141,6 @@ namespace daemon {
         std::unique_ptr<realtime::RansomwareDetector> ransomware_detector_;
         std::unique_ptr<realtime::ClickFixDetector> clickfix_detector_;
         std::unique_ptr<realtime::C2Detector> c2_detector_;
-
-        // File rollback system
-        // std::unique_ptr<realtime::HybridRollbackSystem> rollback_system_;
 
         // Snapshot system (replaces rollback_system_)
         std::unique_ptr<realtime::SnapshotSystem> snapshot_system_;
