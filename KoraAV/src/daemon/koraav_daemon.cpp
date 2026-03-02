@@ -25,6 +25,7 @@
 #include <chrono>
 #include <unordered_map>
 #include <linux/limits.h>
+#include <systemd/sd-daemon.h>
 
 
 struct YaraCacheEntry {
@@ -248,7 +249,7 @@ bool KoraAVDaemon::Initialize(const std::string& config_path) {
 
     // Initialize snapshot system
     snapshot_system_ = std::make_unique<realtime::SnapshotSystem>();
-    if (!snapshot_system_->Initialize()) {
+    if (!snapshot_system_->Initialize(config_.max_snapshots, config_.snapshot_interval_minutes, config_.snapshot_dir)) {
         std::cerr << "Warning: Snapshot/Rollback system not available" << std::endl;
         return false;
     }
@@ -371,47 +372,21 @@ void KoraAVDaemon::Run() {
     
     std::cout << "✓ KoraAV is now protecting your system" << std::endl;
     std::cout << "Daemon running (managed by systemd)" << std::endl;
-    snapshot_thread.join();
-    
-    // Notify systemd we're ready
-    const char* notify_socket = getenv("NOTIFY_SOCKET");
-    if (notify_socket) {
-        // Send READY to systemd
-        int fd = socket(AF_UNIX, SOCK_DGRAM, 0);
-        if (fd >= 0) {
-            struct sockaddr_un addr;
-            memset(&addr, 0, sizeof(addr));
-            addr.sun_family = AF_UNIX;
-            strncpy(addr.sun_path, notify_socket, sizeof(addr.sun_path) - 1);
-            
-            const char* ready_msg = "READY=1\nSTATUS=Real-time protection active\n";
-            sendto(fd, ready_msg, strlen(ready_msg), 0, (struct sockaddr*)&addr, sizeof(addr));
-            close(fd);
-        }
-    }
+    sd_notify(0, "READY=1");
     
     // Main event loop - just wait for shutdown
     while (running_) {
+        sd_notify(0, "WATCHDOG=1");
         std::this_thread::sleep_for(std::chrono::seconds(1));
-        
-        // Send watchdog keepalive to systemd
-        if (notify_socket) {
-            int fd = socket(AF_UNIX, SOCK_DGRAM, 0);
-            if (fd >= 0) {
-                struct sockaddr_un addr;
-                memset(&addr, 0, sizeof(addr));
-                addr.sun_family = AF_UNIX;
-                strncpy(addr.sun_path, notify_socket, sizeof(addr.sun_path) - 1);
-                
-                const char* watchdog_msg = "WATCHDOG=1\n";
-                sendto(fd, watchdog_msg, strlen(watchdog_msg), 0, (struct sockaddr*)&addr, sizeof(addr));
-                close(fd);
-            }
-        }
     }
     
     std::cout << "Stopping KoraAV..." << std::endl;
+    sd_notify(0, "STOPPING=1");
+    if (snapshot_thread.joinable()) {
+        snapshot_thread.join();
+    }
 }
+
 
 void KoraAVDaemon::Stop() {
     if (!running_.exchange(false)) {
@@ -502,7 +477,6 @@ bool KoraAVDaemon::LoadConfiguration(const std::string& config_path) {
     config_.max_snapshots = 6;
     config_.snapshot_dir = "/.snapshots/koraav";
     config_.snapshot_type = "auto";
-    config_.snapshot_retention_minutes = 30;
 
 
     config_.alert_threshold = 61;
@@ -531,13 +505,6 @@ bool KoraAVDaemon::LoadConfiguration(const std::string& config_path) {
 
     // SYSTEM LOCKDOWN - DEFAULT OFF - (Mount system as read only)
     config_.auto_lockdown = false;
-
-    // Ransomware behavioral defaults (legacy - kept for compatibility)
-    // config_.ransomware_files_before_action = 4;
-    // config_.ransomware_max_ops_per_second = 50.0;
-    // config_.ransomware_max_directories = 10;
-    // config_.ransomware_max_renames = 15;
-    // config_.ransomware_time_window = 10.0; //10s
 
     config_.log_path = "/opt/koraav/var/logs";
     config_.enable_detailed_logging = false;
@@ -628,22 +595,9 @@ bool KoraAVDaemon::LoadConfiguration(const std::string& config_path) {
             else if (key == "auto_rollback_on_ransomware") config_.auto_rollback_on_ransomware = (value == "true");
             else if (key == "auto_lockdown") config_.auto_lockdown = (value == "true");
         }
-        // else if (current_section == "ransomware") {
-        //     if (key == "files_before_action")
-        //         config_.ransomware_files_before_action = std::stoi(value);
-        //     else if (key == "max_operations_per_second")
-        //         config_.ransomware_max_ops_per_second = std::stod(value);
-        //     else if (key == "max_directories_touched")
-        //         config_.ransomware_max_directories = std::stoi(value);
-        //     else if (key == "max_renames")
-        //         config_.ransomware_max_renames = std::stoi(value);
-        //     else if (key == "time_window_seconds")
-        //         config_.ransomware_time_window = std::stod(value);
-        // }
         else if (current_section == "snapshots") {
             if (key == "snapshot_dir") config_.snapshot_dir = value;
             else if (key == "snapshot_type") config_.snapshot_type = value;
-            else if (key == "snapshot_retention_minutes") config_.snapshot_retention_minutes = std::stoi(value);
         }
         else if (current_section == "logging") {
             if (key == "log_path") config_.log_path = value;
@@ -849,7 +803,7 @@ bool KoraAVDaemon::AttacheBPFProbes() {
 }
 
 
-
+// TODO: Add discord and steam paths
 bool KoraAVDaemon::IsSensitiveFile(const std::string& path) {
     // Check for sensitive file patterns AND directories
     // IMPORTANT: Match directory patterns too, not just specific files,
@@ -1862,6 +1816,7 @@ uint64_t KoraAVDaemon::GetProcessStartTime(uint32_t tgid) {
     iss >> starttime;
     return starttime;
 }
+
 
 
 
