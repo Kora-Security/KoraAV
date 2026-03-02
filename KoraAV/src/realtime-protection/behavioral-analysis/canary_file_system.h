@@ -90,7 +90,7 @@ private:
         "/home/*/Downloads",
         "/home/*/Desktop",
         "/home/*/Pictures",
-        "/home/*/Videos"
+        "/home/*/Videos",
         "/home/*/.config",
         "/var/",
         "/var/www",
