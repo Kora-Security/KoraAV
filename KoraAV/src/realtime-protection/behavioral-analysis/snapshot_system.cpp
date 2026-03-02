@@ -29,10 +29,14 @@ namespace realtime {
         // Cleanup if needed
     }
 
-    bool SnapshotSystem::Initialize() {
+    bool SnapshotSystem::Initialize(int max_snapshots, int snapshot_interval_minutes, const std::string& snapshot_dir) {
         std::cout << "═══════════════════════════════════════════════════════════" << std::endl;
         std::cout << "📸 Snapshot System Initializing" << std::endl;
         std::cout << "═══════════════════════════════════════════════════════════" << std::endl;
+
+        max_snapshots_ = max_snapshots;
+        snapshot_interval_minutes_ = snapshot_interval_minutes;
+        snapshot_dir_ = snapshot_dir;
 
         // Detect filesystem type
         if (!DetectFilesystem()) {
