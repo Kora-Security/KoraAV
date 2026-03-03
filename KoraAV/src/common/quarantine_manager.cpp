@@ -16,11 +16,18 @@ namespace koraav {
 
 QuarantineManager::QuarantineManager(const std::string& quarantine_dir)
     : quarantine_dir_(quarantine_dir) {
-    // Create quarantine directory with restrictive permissions
+    // Create quarantine directory with readable permissions
     try {
         fs::create_directories(quarantine_dir_);
+        
+        // ════════════════════════════════════════════════════════
+        // Set permissions to allow viewing (but not modifying)
+        // 0755 = rwxr-xr-x (root can write, others can read/list)
+        // ════════════════════════════════════════════════════════
         fs::permissions(quarantine_dir_, 
-                       fs::perms::owner_all, 
+                       fs::perms::owner_all | 
+                       fs::perms::group_read | fs::perms::group_exec |
+                       fs::perms::others_read | fs::perms::others_exec,
                        fs::perm_options::replace);
     } catch (const std::exception& e) {
         std::cerr << "Failed to create quarantine directory: " << e.what() << std::endl;
@@ -44,17 +51,81 @@ std::string QuarantineManager::QuarantineFile(const std::string& file_path,
         return "";
     }
     
+    // ════════════════════════════════════════════════════════
+    // Handle large binaries and system files gracefully
+    // ════════════════════════════════════════════════════════
+    
+    // Check file size
+    uintmax_t file_size = 0;
+    try {
+        file_size = fs::file_size(file_path);
+    } catch (...) {
+        file_size = 0;
+    }
+    
+    // Skip quarantine for very large files (>100 MB)
+    // Just log and create info file instead
+    if (file_size > 100 * 1024 * 1024) {
+        std::cout << "⚠️  File too large to quarantine (" << (file_size / 1024 / 1024) 
+                  << " MB): " << file_path << std::endl;
+        std::cout << "   Creating info file only (binary already killed)" << std::endl;
+        
+        // Create info file without copying binary
+        std::string quarantine_path = GenerateQuarantineName(file_path, threat_type);
+        std::string meta_path = quarantine_path + ".info";
+        
+        try {
+            std::ofstream meta(meta_path);
+            auto now = std::chrono::system_clock::now();
+            auto time_t_now = std::chrono::system_clock::to_time_t(now);
+            
+            meta << "Original Path: " << file_path << "\n";
+            meta << "Threat Type: " << threat_type << "\n";
+            meta << "Quarantined: " << std::ctime(&time_t_now);
+            meta << "File Size: " << file_size << " bytes\n";
+            meta << "Note: Binary too large, not copied (process was killed)\n";
+            meta.close();
+            
+            std::cout << "✓ Created quarantine info: " << meta_path << std::endl;
+            return meta_path;
+        } catch (const std::exception& e) {
+            std::cerr << "Failed to create info file: " << e.what() << std::endl;
+            return "";
+        }
+    }
+    
     // Generate quarantine filename
     std::string quarantine_path = GenerateQuarantineName(file_path, threat_type);
     
     try {
-        // Copy file to quarantine (preserve original)
+        // Try to copy file
+        std::error_code ec;
         fs::copy_file(file_path, quarantine_path, 
-                     fs::copy_options::overwrite_existing);
+                     fs::copy_options::overwrite_existing, ec);
+        
+        if (ec) {
+            // If copy fails, at least create info file
+            std::cerr << "Failed to copy file (" << ec.message() << "): " << file_path << std::endl;
+            std::cerr << "Creating info file only" << std::endl;
+            
+            std::string meta_path = quarantine_path + ".info";
+            std::ofstream meta(meta_path);
+            auto now = std::chrono::system_clock::now();
+            auto time_t_now = std::chrono::system_clock::to_time_t(now);
+            
+            meta << "Original Path: " << file_path << "\n";
+            meta << "Threat Type: " << threat_type << "\n";
+            meta << "Quarantined: " << std::ctime(&time_t_now);
+            meta << "Error: " << ec.message() << "\n";
+            meta << "Note: Binary not copied (process was killed)\n";
+            meta.close();
+            
+            return meta_path;
+        }
         
         // Set read-only permissions on quarantined file
         fs::permissions(quarantine_path, 
-                       fs::perms::owner_read, 
+                       fs::perms::owner_read | fs::perms::group_read,
                        fs::perm_options::replace);
         
         // Create metadata file
