@@ -109,8 +109,22 @@ bool NotificationManager::SendNotification(const std::string& title,
         return false;
     }
     
-    // Use notify-send command (available on most Linux systems)
+    // Get logged-in user info
+    std::string username = GetLoggedInUser();
+    std::string user_display = GetUserDisplay(username);
+    
+    if (username.empty() || user_display.empty()) {
+        // Fallback to console
+        std::cout << "\n[NOTIFICATION] " << title << "\n" << message << "\n" << std::endl;
+        return false;
+    }
+    
+    // Build notify-send command
     std::ostringstream cmd;
+    
+    // Run as user with their DISPLAY
+    cmd << "su " << username << " -c \"";
+    cmd << "DISPLAY=" << user_display << " ";
     cmd << "notify-send ";
     
     // Set urgency
@@ -126,41 +140,26 @@ bool NotificationManager::SendNotification(const std::string& title,
             break;
     }
     
-    // Add icon
+    // Add icon and app name
     cmd << "-i security-high ";
-    
-    // Add app name
     cmd << "-a 'KoraAV' ";
     
-    // Timeout (0 = doesn't expire for critical, 10s for others)
+    // Timeout
     if (urgency == Urgency::CRITICAL) {
-        cmd << "-t 0 ";
+        cmd << "-t 0 ";  // Doesn't expire
     } else {
-        cmd << "-t 10000 ";
+        cmd << "-t 10000 ";  // 10 seconds
     }
     
-    // Title and message (escape quotes)
-    std::string escaped_title = title;
-    std::string escaped_message = message;
+    // Escape title and message for shell
+    std::string escaped_title = EscapeForShell(title);
+    std::string escaped_message = EscapeForShell(message);
     
-    // Simple escape (replace " with \")
-    size_t pos = 0;
-    while ((pos = escaped_title.find('"', pos)) != std::string::npos) {
-        escaped_title.replace(pos, 1, "\\\"");
-        pos += 2;
-    }
-    pos = 0;
-    while ((pos = escaped_message.find('"', pos)) != std::string::npos) {
-        escaped_message.replace(pos, 1, "\\\"");
-        pos += 2;
-    }
+    cmd << "'" << escaped_title << "' ";
+    cmd << "'" << escaped_message << "'";
+    cmd << "\" 2>/dev/null &";
     
-    cmd << "\"" << escaped_title << "\" ";
-    cmd << "\"" << escaped_message << "\"";
-    
-    // Execute in background
-    cmd << " &";
-    
+    // Execute
     int result = system(cmd.str().c_str());
     
     return (result == 0);
@@ -179,6 +178,51 @@ std::string NotificationManager::GetThreatIcon(int score) {
     if (score >= 90) return "dialog-error";
     if (score >= 70) return "dialog-warning";
     return "dialog-information";
+}
+
+std::string NotificationManager::GetLoggedInUser() {
+    FILE* pipe = popen("who | awk '{print $1}' | head -1", "r");
+    if (!pipe) return "";
+    
+    char buffer[256];
+    std::string username;
+    if (fgets(buffer, sizeof(buffer), pipe)) {
+        username = buffer;
+        // Trim newline
+        if (!username.empty() && username.back() == '\n') {
+            username.pop_back();
+        }
+    }
+    pclose(pipe);
+    
+    return username;
+}
+
+std::string NotificationManager::GetUserDisplay(const std::string& username) {
+    if (username.empty()) return ":0";
+    
+    // Check common displays
+    std::vector<std::string> displays = {":0", ":1", ":10"};
+    
+    for (const auto& display : displays) {
+        std::string check = "su " + username + " -c 'DISPLAY=" + display + " xdpyinfo >/dev/null 2>&1'";
+        if (system(check.c_str()) == 0) {
+            return display;
+        }
+    }
+    
+    return ":0";  // Default fallback
+}
+
+std::string NotificationManager::EscapeForShell(const std::string& str) {
+    std::string escaped;
+    for (char c : str) {
+        if (c == '\'' || c == '"' || c == '\\' || c == '$' || c == '`') {
+            escaped += '\\';
+        }
+        escaped += c;
+    }
+    return escaped;
 }
 
 } // namespace koraav
