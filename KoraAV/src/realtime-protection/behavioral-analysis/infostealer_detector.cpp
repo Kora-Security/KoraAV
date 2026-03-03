@@ -2,6 +2,7 @@
 #include "infostealer_detector.h"
 #include <algorithm>
 #include <sstream>
+#include <fstream>
 
 namespace koraav {
 namespace realtime {
@@ -10,6 +11,10 @@ InfoStealerDetector::InfoStealerDetector() {
 }
 
 void InfoStealerDetector::TrackFileAccess(uint32_t pid, const std::string& path) {
+    if (IsLegitimateAccess(pid, path)) {
+        return;  // Don't track legitimate access
+    }
+    
     auto& activity = process_activities_[pid];
 
     auto now = std::chrono::system_clock::now();
@@ -252,6 +257,7 @@ bool InfoStealerDetector::IsSensitiveDirectory(const std::string& path) {
         "/wallet",
         "/Documents/",
         "/Downloads/",
+        "/Pictures/",
         "/.aws/",
         "/.docker/",
         "/.kube/",
@@ -347,6 +353,43 @@ bool InfoStealerDetector::IsExfiltrationPattern(const ProcessActivity& activity)
     }
 
     return false;
+}
+
+bool InfoStealerDetector::IsLegitimateAccess(uint32_t pid, const std::string& path) {
+    // Get process name
+    std::string proc_name = GetProcessName(pid);
+    if (proc_name.empty()) return false;
+    
+    // Check whitelist
+    auto it = legitimate_access_.find(proc_name);
+    if (it == legitimate_access_.end()) {
+        return false;  // Not in whitelist
+    }
+    
+    // Check if path matches allowed directories
+    for (const auto& allowed_dir : it->second) {
+        if (path.find(allowed_dir) != std::string::npos) {
+            return true;  // Legitimate access
+        }
+    }
+    
+    return false;
+}
+
+std::string InfoStealerDetector::GetProcessName(uint32_t pid) {
+    std::string path = "/proc/" + std::to_string(pid) + "/comm";
+    std::ifstream file(path);
+    if (!file) return "";
+    
+    std::string name;
+    std::getline(file, name);
+    
+    // Trim newline if present
+    if (!name.empty() && name.back() == '\n') {
+        name.pop_back();
+    }
+    
+    return name;
 }
 
 } // namespace realtime
