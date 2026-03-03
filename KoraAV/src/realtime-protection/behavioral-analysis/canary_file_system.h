@@ -85,6 +85,8 @@ private:
     
     // Protected directories (will be expanded for all users)
     std::vector<std::string> protected_dir_patterns_ = {
+        "/root",
+        "/home/*",
         "/home/*/",
         "/home/*/Documents",
         "/home/*/Downloads",
@@ -92,6 +94,7 @@ private:
         "/home/*/Pictures",
         "/home/*/Videos",
         "/home/*/.config",
+        "/home/*/.ssh",
         "/var/",
         "/var/www",
         "/srv",
