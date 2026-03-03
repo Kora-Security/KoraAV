@@ -58,6 +58,11 @@ private:
     void CleanupLibnotify();
     std::string GetUrgencyString(Urgency urgency);
     std::string GetThreatIcon(int score);
+    
+    // Helper functions for sending notifications as user
+    std::string GetLoggedInUser();
+    std::string GetUserDisplay(const std::string& username);
+    std::string EscapeForShell(const std::string& str);
 };
 
 } // namespace koraav
