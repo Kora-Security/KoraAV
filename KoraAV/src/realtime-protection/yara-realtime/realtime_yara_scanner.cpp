@@ -110,6 +110,19 @@ bool RealtimeYaraScanner::QuickScan(const std::string& path, std::vector<std::st
 }
 
 bool RealtimeYaraScanner::ShouldScan(const std::string& path, size_t file_size) {
+    // Don't scan ourselves
+    if (path.find("/opt/koraav/") == 0) {
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        stats_.skipped_whitelisted++;
+        return false;
+    }
+    
+    if (path == "/usr/bin/koraav" || path == "/usr/bin/korad") {
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        stats_.skipped_whitelisted++;
+        return false;
+    }
+    
     // Check file size
     if (file_size > max_file_size_) {
         std::lock_guard<std::mutex> lock(stats_mutex_);
