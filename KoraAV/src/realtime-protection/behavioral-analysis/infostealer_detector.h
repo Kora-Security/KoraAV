@@ -81,12 +81,31 @@ private:
     };
 
     std::unordered_map<uint32_t, ProcessActivity> process_activities_;
+    
+    // Whitelist: process name → allowed directories (for legitimate access)
+    std::unordered_map<std::string, std::vector<std::string>> legitimate_access_ = {
+        {"firefox", {".mozilla/firefox", ".cache/mozilla"}},
+        {"firefox-esr", {".mozilla/firefox", ".cache/mozilla"}},
+        {"chrome", {".config/google-chrome", ".config/chromium", ".cache/google-chrome"}},
+        {"chromium", {".config/chromium", ".cache/chromium"}},
+        {"brave", {".config/BraveSoftware", ".cache/BraveSoftware"}},
+        {"thunderbird", {".thunderbird", ".cache/thunderbird"}},
+        {"gpg", {".gnupg"}},
+        {"gpg-agent", {".gnupg"}},
+        {"ssh", {".ssh"}},
+        {"ssh-agent", {".ssh"}},
+        {"sshd", {".ssh"}},
+        {"koraav", {"/opt/koraav", ".config", ".cache"}},
+        {"korad", {"/opt/koraav", ".config", ".cache"}}
+    };
 
     // Detection logic
     int CalculateSensitivityScore(const ProcessActivity& activity);
     bool IsSensitiveDirectory(const std::string& path);
     std::string GetDirectoryCategory(const std::string& path);
     bool IsExfiltrationPattern(const ProcessActivity& activity);
+    bool IsLegitimateAccess(uint32_t pid, const std::string& path);
+    std::string GetProcessName(uint32_t pid);
 };
 
 } // namespace realtime
