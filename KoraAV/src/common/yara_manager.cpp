@@ -11,6 +11,7 @@
 #include <iostream>
 #include <filesystem>
 #include <cstring>
+#include <sys/stat.h>
 
 namespace fs = std::filesystem;
 
@@ -202,6 +203,51 @@ bool YaraManager::LoadRulesInternal(const std::string& dir) {
 std::vector<std::string> YaraManager::ScanFile(const std::string& path) {
     std::vector<std::string> matches;
     
+    // ════════════════════════════════════════════════════════════════
+    // CRITICAL: File validation BEFORE scanning
+    // ════════════════════════════════════════════════════════════════
+    
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0) {
+        // Cannot stat file - might not exist or no permissions
+        return matches;
+    }
+    
+    // 1. Skip directories
+    if (S_ISDIR(st.st_mode)) {
+        return matches;  // Not a file
+    }
+    
+    // 2. Skip special files (sockets, FIFOs, devices, etc.)
+    if (!S_ISREG(st.st_mode)) {
+        // Not a regular file - could crash YARA
+        return matches;
+    }
+    
+    // 3. Skip oversized files (>100 MB)
+    const off_t MAX_FILE_SIZE = 100 * 1024 * 1024;  // 100 MB (match st.st_size type)
+    if (st.st_size > MAX_FILE_SIZE) {
+        std::cerr << "⚠️  File too large (" << (st.st_size / 1024 / 1024) 
+                  << " MB), skipping: " << path << std::endl;
+        return matches;
+    }
+    
+    // 4. Skip own binary (self-protection)
+    if (path.find("/opt/koraav/") == 0 ||
+        path == "/usr/bin/koraav" ||
+        path == "/usr/bin/koraavm") {
+        return matches;  // Don't scan ourselves
+    }
+    
+    // 5. Skip zero-byte files
+    if (st.st_size == 0) {
+        return matches;  // Empty file, nothing to scan
+    }
+    
+    // ════════════════════════════════════════════════════════════════
+    // Now safe to scan
+    // ════════════════════════════════════════════════════════════════
+    
     std::lock_guard<std::mutex> lock(mutex_);
     
     if (!rules_) {
@@ -218,7 +264,24 @@ std::vector<std::string> YaraManager::ScanFile(const std::string& path) {
     );
     
     if (result != ERROR_SUCCESS) {
-        std::cerr << "YARA scan failed on " << path << ": " << result << std::endl;
+        // Log error code for debugging
+        const char* error_msg = "Unknown error";
+        switch (result) {
+            case ERROR_INSUFFICIENT_MEMORY:
+                error_msg = "Insufficient memory";
+                break;
+            case ERROR_COULD_NOT_OPEN_FILE:
+                error_msg = "Could not open file";
+                break;
+            case ERROR_COULD_NOT_MAP_FILE:
+                error_msg = "Could not map file";
+                break;
+            case ERROR_SCAN_TIMEOUT:
+                error_msg = "Scan timeout";
+                break;
+        }
+        std::cerr << "⚠️  YARA scan failed on " << path 
+                  << " (code " << result << ": " << error_msg << ")" << std::endl;
     }
     
     return matches;

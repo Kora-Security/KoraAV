@@ -117,6 +117,17 @@ void RansomwareDetector::TrackFileOperation(uint32_t tgid, const std::string& pa
     }
     activity.last_activity = now;
     
+    // ════════════════════════════════════════════════════════════════
+    // ENTERPRISE: Sliding Window Management
+    // ════════════════════════════════════════════════════════════════
+    
+    // Expire old events (older than 60 seconds)
+    ExpireOldEvents(activity);
+    
+    // Add to sliding window
+    activity.recent_operations.push_back(now);
+    activity.recent_files.push_back(path);
+    
     // Track operation
     FileOperation op{path, operation, now};
     activity.file_operations.push_back(op);
@@ -138,19 +149,20 @@ void RansomwareDetector::TrackFileOperation(uint32_t tgid, const std::string& pa
     activity.files_touched.insert(path);
     activity.directories_touched.insert(GetDirectoryPath(path));
     
-    // Calculate operations per second
-    activity.operations_per_second = CalculateOperationsPerSecond(activity);
+    // Calculate operations per second using SLIDING WINDOW
+    activity.operations_per_second = CalculateSlidingWindowVelocity(activity);
 
     // Only check entropy if suspicious activity threshold crossed
     if (!activity.entropy_spike_detected) {
-
         uint32_t files_count = activity.files_touched.size();
 
         if (files_count >= thresholds_.files_before_action &&
             activity.operations_per_second > thresholds_.max_ops_per_second / 2) {
 
-            for (const auto& file : activity.files_touched) {
+            int high_entropy_count = 0;
+            double total_entropy_delta = 0.0;
 
+            for (const auto& file : activity.files_touched) {
                 // Skip files already entropy-checked
                 if (activity.entropy_checked_files.count(file))
                     continue;
@@ -165,9 +177,22 @@ void RansomwareDetector::TrackFileOperation(uint32_t tgid, const std::string& pa
 
                 activity.entropy_checked_files.insert(file);
 
+                // Track high-entropy files
                 if (delta > thresholds_.entropy_delta_threshold) {
+                    high_entropy_count++;
+                    total_entropy_delta += delta;
+                }
+            }
+
+            // CRITICAL: Require 3+ files with high entropy
+            // This prevents false positives from single compressed files
+            if (high_entropy_count >= 3) {
+                double avg_delta = total_entropy_delta / high_entropy_count;
+                if (avg_delta >= thresholds_.entropy_delta_threshold) {
                     activity.entropy_spike_detected = true;
-                    break;
+                    
+                    // Store for verification
+                    const_cast<ProcessActivity&>(activity).fsync_sequence_count = high_entropy_count;
                 }
             }
         }
@@ -224,6 +249,10 @@ int RansomwareDetector::AnalyzeProcess(uint32_t tgid) {
 
 int RansomwareDetector::CalculateRansomwareScore(const ProcessActivity& activity) {
     int score = 0;
+
+    // ════════════════════════════════════════════════════════════════
+    // STAGE 1: BEHAVIORAL SCORING (0-100)
+    // ════════════════════════════════════════════════════════════════
 
     // ═══════════════════════════════════════════════════════════
     // ENTROPY DELTA INCREASE (Strong Encryption Indicator)
@@ -356,6 +385,39 @@ int RansomwareDetector::CalculateRansomwareScore(const ProcessActivity& activity
     // Backup tampering
     if (activity.backup_tampering_detected) {
         score += 45;  // Trying to destroy backups = definite malware
+    }
+    
+    // ════════════════════════════════════════════════════════════════
+    // STAGE 2: ENTROPY GATE (Mandatory for kill threshold)
+    // ════════════════════════════════════════════════════════════════
+    
+    // CRITICAL: Scores ≥81 require encryption evidence
+    // This prevents killing legitimate high-velocity tools (backup, indexing)
+    if (score >= 81 && !activity.entropy_spike_detected) {
+        // High behavioral score but NO encryption detected
+        // Cap at 80 to prevent false positive kills
+        score = 80;
+    }
+    
+    // ════════════════════════════════════════════════════════════════
+    // STAGE 3: MULTI-FACTOR VERIFICATION (for scores 81+)
+    // ════════════════════════════════════════════════════════════════
+    
+    if (score >= 81) {
+        // Count major indicators present
+        int major_indicators = 0;
+        
+        if (activity.entropy_spike_detected) major_indicators++;
+        if (activity.mass_extension_change) major_indicators++;
+        if (activity.operations_per_second > thresholds_.max_ops_per_second) major_indicators++;
+        if (activity.backup_tampering_detected) major_indicators++;
+        if (activity.suspicious_parent_detected) major_indicators++;
+        
+        // CRITICAL: Require at least 2 major indicators for kill
+        // This ensures multi-factor confirmation
+        if (major_indicators < 2) {
+            score = 80;  // Cap at warning level
+        }
     }
     
     // Cap at 100
@@ -766,6 +828,58 @@ bool RansomwareDetector::DetectBackupTampering(uint32_t tgid) {
     }
     
     return false;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// ENTERPRISE: Sliding Window Implementation
+// ════════════════════════════════════════════════════════════════════════════
+
+void RansomwareDetector::ExpireOldEvents(ProcessActivity& activity) {
+    auto now = std::chrono::system_clock::now();
+    auto window_start = now - std::chrono::seconds(ProcessActivity::SLIDING_WINDOW_SECONDS);
+    
+    // Remove events older than 60 seconds from recent_operations
+    while (!activity.recent_operations.empty() &&
+           activity.recent_operations.front() < window_start) {
+        activity.recent_operations.pop_front();
+        
+        // Also remove corresponding file from recent_files
+        if (!activity.recent_files.empty()) {
+            activity.recent_files.pop_front();
+        }
+    }
+}
+
+double RansomwareDetector::CalculateSlidingWindowVelocity(const ProcessActivity& activity) {
+    if (activity.recent_operations.empty()) {
+        return 0.0;
+    }
+    
+    // Count operations in last 60 seconds
+    int operations_in_window = activity.recent_operations.size();
+    
+    if (operations_in_window == 0) {
+        return 0.0;
+    }
+    
+    // Calculate time span of window
+    auto oldest = activity.recent_operations.front();
+    auto newest = activity.recent_operations.back();
+    
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(newest - oldest);
+    
+    if (duration.count() == 0) {
+        return 0.0;
+    }
+    
+    // Operations per second = operations / (duration in seconds)
+    double seconds = duration.count() / 1000.0;
+    return operations_in_window / seconds;
+}
+
+int RansomwareDetector::CountEventsInWindow(const ProcessActivity& activity) {
+    // Simply return the size of recent operations (already expired)
+    return activity.recent_operations.size();
 }
 
 } // namespace realtime

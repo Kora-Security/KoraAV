@@ -227,6 +227,11 @@ namespace daemon {
         void KillProcess(uint32_t tgid);
         void BlockProcessNetwork(uint32_t tgid);
         void LockdownSystem();
+        
+        // CRITICAL: Whitelist and self-protection
+        bool ShouldIgnoreProcess(uint32_t tgid, const std::string& exe_path);
+        std::string GetProcessExecutablePath(uint32_t pid);
+        
         void LogThreat(uint32_t tgid, const std::string& threat_type,
                         int score, const std::vector<std::string>& indicators);
 

@@ -7,6 +7,7 @@
 #include <glob.h>
 #include <unistd.h>
 #include <filesystem>
+#include <cstring>
 
 namespace fs = std::filesystem;
 namespace koraav {
@@ -65,7 +66,15 @@ void CanaryFileSystem::CreateCanaries(int count_per_directory) {
 bool CanaryFileSystem::CreateCanaryFile(const std::string& directory, const std::string& name) {
     // Check if directory exists
     struct stat st;
-    if (stat(directory.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
+    if (stat(directory.c_str(), &st) != 0) {
+        std::cerr << "⚠️  Cannot create canary in " << directory 
+                  << ": directory doesn't exist (" << strerror(errno) << ")" << std::endl;
+        return false;
+    }
+    
+    if (!S_ISDIR(st.st_mode)) {
+        std::cerr << "⚠️  Cannot create canary in " << directory 
+                  << ": not a directory" << std::endl;
         return false;
     }
     
@@ -74,15 +83,28 @@ bool CanaryFileSystem::CreateCanaryFile(const std::string& directory, const std:
     // Create file with innocuous content
     std::ofstream file(filepath);
     if (!file) {
+        std::cerr << "⚠️  Cannot create canary " << filepath 
+                  << ": " << strerror(errno) << std::endl;
         return false;
     }
     
     file << GenerateCanaryContent(directory);
     file.close();
     
-    // Set normal permissions (don't make it obvious)
-    chmod(filepath.c_str(), 0644);
+    // Verify it was created
+    if (stat(filepath.c_str(), &st) != 0) {
+        std::cerr << "⚠️  Canary created but not readable: " << filepath << std::endl;
+        return false;
+    }
     
+    // Set normal permissions (don't make it obvious)
+    if (chmod(filepath.c_str(), 0644) != 0) {
+        std::cerr << "⚠️  Cannot set permissions on canary: " << filepath << std::endl;
+        unlink(filepath.c_str());
+        return false;
+    }
+    
+    std::cout << "✓ Created canary: " << filepath << std::endl;
     return true;
 }
 

@@ -14,6 +14,7 @@
 #include <ctime>
 #include <cerrno>
 #include <fcntl.h>
+#include <limits.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 #include <sys/prctl.h>
@@ -1073,6 +1074,15 @@ void KoraAVDaemon::AnalyzeFileEvents() {
         //Ransomware
         bool is_sensitive = IsSensitiveFile(filename);
         if (ransomware_detector_ && is_sensitive) {
+            // ═══════════════════════════════════════════════════════════
+            // CRITICAL: Whitelist check BEFORE scoring
+            // ═══════════════════════════════════════════════════════════
+            
+            std::string exe_path = GetProcessExecutablePath(evt.tgid);
+            if (ShouldIgnoreProcess(evt.tgid, exe_path)) {
+                continue;  // Skip whitelisted processes
+            }
+            
             // Track for ransomware detection
             ransomware_detector_->TrackFileOperation(evt.tgid, filename, "write");
             int score = ransomware_detector_->AnalyzeProcess(evt.tgid);
@@ -1496,6 +1506,107 @@ void KoraAVDaemon::RunPeriodicAnalysis() {
 
     std::cout << "Periodic analysis thread stopped" << std::endl;
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// CRITICAL: Process Whitelist & Self-Protection
+// ════════════════════════════════════════════════════════════════════════════
+
+bool KoraAVDaemon::ShouldIgnoreProcess(uint32_t tgid, const std::string& exe_path) {
+    // ═══════════════════════════════════════════════════════════
+    // 1. SELF-PROTECTION: Never kill ourselves!
+    // ═══════════════════════════════════════════════════════════
+    
+    if (exe_path.find("/opt/koraav/") == 0 ||
+        exe_path == "/usr/bin/koraav" ||
+        exe_path == "/usr/bin/koraavm" ||
+        exe_path.find("koraav") != std::string::npos) {
+        return true;  // Never scan/kill ourselves
+    }
+    
+    // ═══════════════════════════════════════════════════════════
+    // 2. SYSTEM BINARIES: Don't kill critical system processes
+    // ═══════════════════════════════════════════════════════════
+    
+    if (exe_path.find("/bin/") == 0 ||
+        exe_path.find("/sbin/") == 0 ||
+        exe_path.find("/usr/bin/") == 0 ||
+        exe_path.find("/usr/sbin/") == 0 ||
+        exe_path.find("/lib/systemd/") == 0) {
+        return true;  // System binaries
+    }
+    
+    // ═══════════════════════════════════════════════════════════
+    // 3. PARENT PROCESS CHECK: System services
+    // ═══════════════════════════════════════════════════════════
+    
+    std::string stat_path = "/proc/" + std::to_string(tgid) + "/stat";
+    std::ifstream stat_file(stat_path);
+    if (stat_file) {
+        std::string line;
+        std::getline(stat_file, line);
+        
+        // Parse ppid (parent process ID) from /proc/pid/stat
+        // Format: pid (comm) state ppid ...
+        size_t first_paren = line.find('(');
+        size_t last_paren = line.rfind(')');
+        if (first_paren != std::string::npos && last_paren != std::string::npos) {
+            std::string after_comm = line.substr(last_paren + 1);
+            std::istringstream iss(after_comm);
+            char state;
+            uint32_t ppid;
+            iss >> state >> ppid;
+            
+            // If parent is init/systemd (PID 1), likely a system service
+            if (ppid == 1) {
+                return true;
+            }
+        }
+    }
+    
+    // ═══════════════════════════════════════════════════════════
+    // 4. WHITELIST FILE (if configured)
+    // ═══════════════════════════════════════════════════════════
+    
+    // TODO: Load whitelist from config_.process_whitelist_file
+    // For now, hardcode common legitimate processes
+    std::vector<std::string> whitelist = {
+        "systemd", "init", "sshd", "cron",
+        "apt", "apt-get", "dpkg", "rpm", "yum", "dnf",
+        "rsync", "rsnapshot", "duplicity", "borg",
+        "mysqld", "postgres", "mongod", "redis-server"
+    };
+    
+    // Extract process name from path
+    size_t last_slash = exe_path.rfind('/');
+    std::string proc_name = (last_slash != std::string::npos) ? 
+                            exe_path.substr(last_slash + 1) : exe_path;
+    
+    for (const auto& whitelisted : whitelist) {
+        if (proc_name == whitelisted) {
+            return true;
+        }
+    }
+    
+    return false;  // Not whitelisted, can be scanned
+}
+
+std::string KoraAVDaemon::GetProcessExecutablePath(uint32_t pid) {
+    std::string exe_link = "/proc/" + std::to_string(pid) + "/exe";
+    
+    char buf[PATH_MAX];
+    ssize_t len = readlink(exe_link.c_str(), buf, sizeof(buf) - 1);
+    
+    if (len != -1) {
+        buf[len] = '\0';
+        return std::string(buf);
+    }
+    
+    return "";
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Threat Response
+// ════════════════════════════════════════════════════════════════════════════
 
 void KoraAVDaemon::HandleThreat(uint32_t tgid, const std::string& threat_type,
                                 int score, const std::vector<std::string>& indicators) {

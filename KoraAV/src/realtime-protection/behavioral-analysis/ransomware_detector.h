@@ -11,6 +11,7 @@
 #include <chrono>
 #include <mutex>
 #include <atomic>
+#include <deque>
 
 namespace koraav {
 namespace realtime {
@@ -128,6 +129,15 @@ private:
         // Velocity tracking (operations per second)
         double operations_per_second = 0.0;
         
+        // ════════════════════════════════════════════════════════════
+        // ENTERPRISE: Sliding Window Tracking (last 60 seconds)
+        // ════════════════════════════════════════════════════════════
+        static constexpr int SLIDING_WINDOW_SECONDS = 60;
+        
+        // Circular buffer-like tracking for moving averages
+        std::deque<std::chrono::system_clock::time_point> recent_operations;  // Timestamps only
+        std::deque<std::string> recent_files;  // Files in window
+        
         // Behavioral flags
         bool sequential_directory_scan = false;
         bool mass_extension_change = false;
@@ -175,6 +185,11 @@ private:
     double CalculateOperationsPerSecond(const ProcessActivity& activity);
     std::string GetFileExtension(const std::string& path);
     std::string GetDirectoryPath(const std::string& path);
+    
+    // ENTERPRISE: Sliding window management
+    void ExpireOldEvents(ProcessActivity& activity);
+    double CalculateSlidingWindowVelocity(const ProcessActivity& activity);
+    int CountEventsInWindow(const ProcessActivity& activity);
     
     // Advanced detection helpers (NEW)
     bool DetectFsyncPattern(uint32_t tgid);

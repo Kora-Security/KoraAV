@@ -51,8 +51,81 @@ std::string QuarantineManager::QuarantineFile(const std::string& file_path,
         return "";
     }
     
+    // ════════════════════════════════════════════════════════════════
+    // CRITICAL: Protect system binaries from quarantine
+    // ════════════════════════════════════════════════════════════════
+    
+    const std::vector<std::string> protected_paths = {
+        "/bin/",
+        "/sbin/",
+        "/usr/bin/",
+        "/usr/sbin/",
+        "/lib/",
+        "/lib64/",
+        "/usr/lib/",
+        "/usr/lib64/",
+        "/boot/",
+        "/etc/",
+        "/opt/koraav/",  // Ourselves!
+        "/lib/systemd/"
+    };
+    
+    // Check if file is in protected path
+    for (const auto& protected_path : protected_paths) {
+        if (file_path.find(protected_path) == 0) {
+            std::cout << "════════════════════════════════════════════════════════" << std::endl;
+            std::cout << "⚠️  PROTECTED SYSTEM BINARY" << std::endl;
+            std::cout << "   Path: " << file_path << std::endl;
+            std::cout << "   Location: " << protected_path << std::endl;
+            std::cout << "   Threat: " << threat_type << std::endl;
+            std::cout << "════════════════════════════════════════════════════════" << std::endl;
+            std::cout << "   ACTION: Process KILLED but binary NOT quarantined" << std::endl;
+            std::cout << "   REASON: System stability protection" << std::endl;
+            std::cout << "════════════════════════════════════════════════════════" << std::endl;
+            
+            // Create info file only, don't copy binary
+            std::string info_path = quarantine_dir_ + "/PROTECTED_" + 
+                                   threat_type + "_" +
+                                   std::to_string(std::time(nullptr)) + ".info";
+            
+            try {
+                std::ofstream info(info_path);
+                auto now = std::chrono::system_clock::now();
+                auto time_t_now = std::chrono::system_clock::to_time_t(now);
+                
+                info << "═══════════════════════════════════════════════════════\n";
+                info << "PROTECTED SYSTEM BINARY - NOT QUARANTINED\n";
+                info << "═══════════════════════════════════════════════════════\n\n";
+                info << "Original Path: " << file_path << "\n";
+                info << "Protected Location: " << protected_path << "\n";
+                info << "Threat Type: " << threat_type << "\n";
+                info << "Detected: " << std::ctime(&time_t_now);
+                info << "\nAction Taken:\n";
+                info << "  [✓] Process was KILLED\n";
+                info << "  [✗] Binary was NOT quarantined\n";
+                info << "\nReason:\n";
+                info << "  System stability protection prevents quarantine of\n";
+                info << "  critical system binaries. The malicious process was\n";
+                info << "  terminated, but the binary remains in place.\n";
+                info << "\nRecommended Actions:\n";
+                info << "  1. Investigate how this system binary was compromised\n";
+                info << "  2. Reinstall the affected package\n";
+                info << "  3. Run full system scan\n";
+                info << "  4. Check for rootkit presence\n";
+                info << "═══════════════════════════════════════════════════════\n";
+                info.close();
+                
+                std::cout << "✓ Created protection log: " << info_path << std::endl;
+                return info_path;
+            } catch (const std::exception& e) {
+                std::cerr << "Failed to create protection log: " << e.what() << std::endl;
+                return "";
+            }
+        }
+    }
+    
     // ════════════════════════════════════════════════════════
-    // Handle large binaries and system files gracefully
+    // Handle large binaries gracefully
     // ════════════════════════════════════════════════════════
     
     // Check file size
