@@ -41,13 +41,13 @@ __ __
 
 - [ ] Update threat intelligence feeds (file hashes and IP stuff for proactive detections. Maybe tap into clamAV's hashes, etc.)
 - [ ] Tune C2 detector and work on having less false positives.
+- [ ] Overhaul and harden infostealer detection.
 - [ ] Add ML models for novel variant detection.
-- [ ] Make and add default yara files & work on yara system to handle crashing on error.
 - [ ] Write tests for features and functions.
 - [ ] Optimize and make faster when scanning.
 - [ ] Make progress bar look fancier and actually good looking when scanning.
 - [ ] Work on having less false positives and improve scanning detection.
-- [ ] RootKit, Cryptominer, and Backdoor detection. (and worms, but that isn't exactly high priority rn)
+- [ ] RootKit, Cryptominer, RAT, and Backdoor detection. (and worms, but that isn't exactly high priority rn)
 - [ ] An update system for when a new release is available.
 __ __
 > Eventually have 50+ behavior detections + ML detection like CrowdStrike has.
@@ -60,11 +60,10 @@ KoraAV is a modern antivirus solution designed specifically for Linux systems. U
 
 ### Why KoraAV?
 
-- **Real-Time Protection** - eBPF-powered monitoring catches threats before they execute
+- **Real-Time Protection** - eBPF-powered monitoring
 - **Behavioral Analysis** - Detects ransomware, infostealers, and advanced threats by behavior patterns
 - **Lightning Fast** - Minimal system overhead with kernel-level efficiency
 - **Maximum Security** - Systemd hardening, capabilities-based permissions, no root privilege escalation
-- **Pre-Encryption Detection** - Stops ransomware before your files are encrypted
 - **Zero-Day Protection** - Catches unknown malware through heuristics and behavioral patterns
 __ __
 
@@ -72,15 +71,15 @@ __ __
 
 
 ## Features
+> More placeholders
 
 ### On-Demand Scanning
 - **Hash-based detection** - MD5/SHA256 signatures against known malware
 - **YARA rules** - Custom pattern matching and malware family detection
-- **Entropy analysis** - Identify packed/encrypted malware
+- **Entropy analysis** - Calculates entropy delta on files
 - **Static analysis** - ELF binary inspection, script analysis
 - **Archive scanning** - Deep inspection of ZIP, TAR, RAR, 7Z archives
 - **Multi-threaded** - Parallel scanning for maximum speed
-
 
 ### Real-Time Protection (eBPF-Powered)
 - **File monitoring** - Watch file opens, reads, writes, and modifications
@@ -93,14 +92,12 @@ __ __
 - **ClickFix Detector** - Detects clipboard hijacking and social engineering attacks by looking at what you paste into terminals.
 - **C2 Detector** - Looks for and monitors a basic implementation of C2 behaviors.
 
-
 ### Threat Response
-- **Automatic threat neutralization** - Kill malicious processes instantly
+- **Automatic threat neutralization** - Kill malicious processes instantly and quarantine
 - **Network isolation** - Block network access for suspicious processes - (Prevent data exfiltration)
 - **System lockdown** - Read-only filesystem + network block for critical threats - (prevent data encryption if all else fails)
     > Over kill and is optional and off by default.
 - **Detailed logging** - Complete audit trail of all threats and actions
-
 
 ### Security Hardening
 - **Capabilities-based** - No setuid binaries, minimal privileges
