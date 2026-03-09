@@ -82,7 +82,7 @@ namespace realtime {
                     fs_type_ = FilesystemType::BTRFS;
                     snapshot_dir_ = "/.snapshots/koraav";
                     endmntent(mtab);
-                    system("mkdir -p /.snapshots/koraav 2>/dev/null");
+                    // Directory already created by installer with correct permissions
                     return true;
                 }
 
@@ -91,7 +91,7 @@ namespace realtime {
                     fs_type_ = FilesystemType::ZFS;
                     snapshot_dir_ = "/.snapshots/koraav";
                     endmntent(mtab);
-                    system("mkdir -p /.snapshots/koraav 2>/dev/null");
+                    // Directory already created by installer with correct permissions
                     return true;
                 }
 
@@ -106,7 +106,7 @@ namespace realtime {
                         }
                         snapshot_dir_ = "/.snapshots/koraav";
                         endmntent(mtab);
-                        system("mkdir -p /.snapshots/koraav 2>/dev/null");
+                        // Directory already created by installer with correct permissions
                         return true;
                     }
 
@@ -118,9 +118,8 @@ namespace realtime {
                         snapshot_dir_ = "/.snapshots/koraav";
                         endmntent(mtab);
 
-                        // Create snapshot directory with proper permissions
-                        system("mkdir -p /.snapshots/koraav 2>/dev/null");
-                        system("chmod 700 /.snapshots/koraav 2>/dev/null");
+                        // Directory already created by installer with correct permissions
+                        // (owned by koraav:koraav, chmod 700)
 
                         std::cout << "✓ ext4 detected - using rsync-based snapshots" << std::endl;
                         return true;
@@ -131,8 +130,8 @@ namespace realtime {
                         snapshot_dir_ = "/.snapshots/koraav";
                         endmntent(mtab);
 
-                        system("mkdir -p /.snapshots/koraav 2>/dev/null");
-                        system("chmod 700 /.snapshots/koraav 2>/dev/null");
+                        // Directory already created by installer with correct permissions
+                        // (owned by koraav:koraav, chmod 700)
 
                         std::cout << "✓ XFS detected - using rsync-based snapshots" << std::endl;
                         return true;

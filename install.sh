@@ -408,13 +408,40 @@ install_files() {
     mkdir -p "$INSTALL_DIR"/{bin,lib/bpf,var/{db,logs,quarantine,run},share/doc}
     mkdir -p "$CONFIG_DIR"
     mkdir -p /var/log/koraav
+    
+    # ════════════════════════════════════════════════════════════════
+    # CRITICAL: Create snapshot and canary directories
+    # ════════════════════════════════════════════════════════════════
+    
+    print_info "Creating snapshot directory..."
+    mkdir -p /.snapshots/koraav
+    
+    print_info "Creating user directories for canary files..."
+    # Create common user directories if they don't exist
+    for user_home in /home/*; do
+        if [ -d "$user_home" ]; then
+            user=$(basename "$user_home")
+            mkdir -p "$user_home"/{Documents,Downloads,Desktop,Pictures,Videos} 2>/dev/null || true
+            # Don't change ownership - keep as user
+        fi
+    done
+    
+    # Also create in /root for root user
+    # mkdir -p /root/{Documents,Downloads,Desktop} 2>/dev/null || true
 
     # Set ownership to koraav user for data directories
     print_info "Setting directory permissions..."
     chown -R koraav:koraav "$INSTALL_DIR/var"
     chown -R koraav:koraav /var/log/koraav
     chown koraav:koraav "$CONFIG_DIR"
-    chmod 700 "$INSTALL_DIR/var/quarantine"
+    
+    # ════════════════════════════════════════════════════════════════
+    # CRITICAL: Snapshot directory must be writable by koraav user
+    # ════════════════════════════════════════════════════════════════
+    chown -R koraav:koraav /.snapshots/koraav
+    chmod 700 /.snapshots/koraav
+    
+    chmod 755 "$INSTALL_DIR/var/quarantine"  # Readable by all (was 700)
     chmod 755 "$INSTALL_DIR/var/run"
     chmod 755 /var/log/koraav
 

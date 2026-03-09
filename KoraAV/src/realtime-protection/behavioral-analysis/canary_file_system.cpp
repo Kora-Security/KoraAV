@@ -64,27 +64,41 @@ void CanaryFileSystem::CreateCanaries(int count_per_directory) {
 }
 
 bool CanaryFileSystem::CreateCanaryFile(const std::string& directory, const std::string& name) {
-    // Check if directory exists
+    // ════════════════════════════════════════════════════════
+    // Check if directory exists - if not, silently skip
+    // (Directories should exist from installer, but user dirs vary)
+    // ════════════════════════════════════════════════════════
     struct stat st;
     if (stat(directory.c_str(), &st) != 0) {
-        std::cerr << "⚠️  Cannot create canary in " << directory 
-                  << ": directory doesn't exist (" << strerror(errno) << ")" << std::endl;
+        // Directory doesn't exist - skip silently (normal for some user dirs)
         return false;
     }
     
     if (!S_ISDIR(st.st_mode)) {
-        std::cerr << "⚠️  Cannot create canary in " << directory 
-                  << ": not a directory" << std::endl;
+        // Not a directory - skip silently
         return false;
     }
     
+    // ════════════════════════════════════════════════════════
+    // Check if koraav user can write to this directory
+    // ════════════════════════════════════════════════════════
+    std::string test_file = directory + "/.koraav_write_test";
+    std::ofstream test(test_file);
+    if (!test) {
+        // Can't write here - skip silently (permission issue)
+        return false;
+    }
+    test.close();
+    unlink(test_file.c_str());
+    
+    // ════════════════════════════════════════════════════════
+    // Create canary file
+    // ════════════════════════════════════════════════════════
     std::string filepath = directory + "/" + name;
     
-    // Create file with innocuous content
     std::ofstream file(filepath);
     if (!file) {
-        std::cerr << "⚠️  Cannot create canary " << filepath 
-                  << ": " << strerror(errno) << std::endl;
+        // Can't create file - skip silently
         return false;
     }
     
@@ -93,13 +107,11 @@ bool CanaryFileSystem::CreateCanaryFile(const std::string& directory, const std:
     
     // Verify it was created
     if (stat(filepath.c_str(), &st) != 0) {
-        std::cerr << "⚠️  Canary created but not readable: " << filepath << std::endl;
         return false;
     }
     
     // Set normal permissions (don't make it obvious)
     if (chmod(filepath.c_str(), 0644) != 0) {
-        std::cerr << "⚠️  Cannot set permissions on canary: " << filepath << std::endl;
         unlink(filepath.c_str());
         return false;
     }

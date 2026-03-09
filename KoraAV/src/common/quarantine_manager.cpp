@@ -16,21 +16,35 @@ namespace koraav {
 
 QuarantineManager::QuarantineManager(const std::string& quarantine_dir)
     : quarantine_dir_(quarantine_dir) {
-    // Create quarantine directory with readable permissions
+    // ════════════════════════════════════════════════════════
+    // Directory already created by installer
+    // Just verify it exists and is accessible
+    // ════════════════════════════════════════════════════════
     try {
-        fs::create_directories(quarantine_dir_);
+        // Check if directory exists
+        if (!fs::exists(quarantine_dir_)) {
+            std::cerr << "⚠️  Quarantine directory doesn't exist: " << quarantine_dir_ << std::endl;
+            std::cerr << "   Expected to be created by installer" << std::endl;
+            // Try to create as fallback (though installer should have done this)
+            fs::create_directories(quarantine_dir_);
+        }
         
-        // ════════════════════════════════════════════════════════
-        // Set permissions to allow viewing (but not modifying)
-        // 0755 = rwxr-xr-x (root can write, others can read/list)
-        // ════════════════════════════════════════════════════════
+        // Verify it's a directory
+        if (!fs::is_directory(quarantine_dir_)) {
+            std::cerr << "⚠️  Quarantine path exists but is not a directory: " << quarantine_dir_ << std::endl;
+            return;
+        }
+        
+        // Ensure correct permissions (755 = readable by all, writable by owner)
         fs::permissions(quarantine_dir_, 
                        fs::perms::owner_all | 
                        fs::perms::group_read | fs::perms::group_exec |
                        fs::perms::others_read | fs::perms::others_exec,
                        fs::perm_options::replace);
+                       
+        std::cout << "✓ Quarantine directory ready: " << quarantine_dir_ << std::endl;
     } catch (const std::exception& e) {
-        std::cerr << "Failed to create quarantine directory: " << e.what() << std::endl;
+        std::cerr << "⚠️  Quarantine directory error: " << e.what() << std::endl;
     }
 }
 
