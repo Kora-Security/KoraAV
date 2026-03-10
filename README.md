@@ -32,7 +32,7 @@ __ __
 
 > Peer review reports and audit review reports are WIP currently.
 
-> This README.md file is currently a WIP.
+> This README.md file is currently a WIP and placeholder.
 
 <br>
 
