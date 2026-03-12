@@ -168,6 +168,15 @@ check_dependencies_tools() {
         fi
     done
 
+    # Check for ACL tools (required for secure canary file permissions)
+    if ! command -v setfacl >/dev/null 2>&1; then
+        MISSING_TOOLS+=(acl)
+    fi
+
+    if ! command -v getfacl >/dev/null 2>&1; then
+        MISSING_TOOLS+=(acl)
+    fi
+
     if [ ${#MISSING_TOOLS[@]} -gt 0 ]; then
         print_warning "Missing tools: ${MISSING_TOOLS[*]}"
         print_info "These will be installed with dependencies"
@@ -258,7 +267,8 @@ install_dependencies_debian() {
         libcap-dev \
         libcap2-bin \
         libnotify-bin \
-        libsystemd-dev
+        libsystemd-dev \
+        acl
 
     print_info "Installing eBPF tools..."
     # Try to install bpftool from linux-tools
@@ -347,7 +357,8 @@ install_dependencies_arch() {
         unzip \
         tar \
         p7zip \
-        unrar
+        unrar \
+        acl
 
     print_success "All dependencies installed"
 }
@@ -408,40 +419,124 @@ install_files() {
     mkdir -p "$INSTALL_DIR"/{bin,lib/bpf,var/{db,logs,quarantine,run},share/doc}
     mkdir -p "$CONFIG_DIR"
     mkdir -p /var/log/koraav
-    
+
     # ════════════════════════════════════════════════════════════════
-    # CRITICAL: Create snapshot and canary directories
+    # CRITICAL: Create snapshot directory
     # ════════════════════════════════════════════════════════════════
-    
+
     print_info "Creating snapshot directory..."
     mkdir -p /.snapshots/koraav
-    
-    print_info "Creating user directories for canary files..."
-    # Create common user directories if they don't exist
+
+    print_info "Creating system canary directories..."
+    # Create dedicated directories that look like system data
+    # Ransomware scanning /var will find these and trigger canaries
+    mkdir -p /var/lib/kav/system_cache
+    mkdir -p /var/lib/kav/backup_data
+    mkdir -p /var/lib/kav/log_archive
+    mkdir -p /var/lib/kav/temp_files
+
+    # ════════════════════════════════════════════════════════════════
+    # ENTERPRISE: Grant koraav permissions to user directories
+    # ════════════════════════════════════════════════════════════════
+
+    print_info "Configuring canary file permissions..."
+
+    # ════════════════════════════════════════════════════════════════
+    # CRITICAL: ACL (Access Control Lists) Required
+    # ════════════════════════════════════════════════════════════════
+    # We use ACL to grant koraav write permission to user directories
+    # WITHOUT granting write to entire groups (more secure).
+    #
+    # ACL is installed as a dependency, so this should always succeed.
+    # If it fails, installation cannot continue.
+    # ════════════════════════════════════════════════════════════════
+
+    # Verify ACL tools are available
+    if ! command -v setfacl >/dev/null 2>&1; then
+        print_error "ACL tools not found!"
+        print_error "This should have been installed as a dependency."
+        print_error "Please run: sudo apt install acl  (Debian/Ubuntu)"
+        print_error "          or: sudo pacman -S acl   (Arch)"
+        exit 1
+    fi
+
+    USERS_CONFIGURED=0
+
     for user_home in /home/*; do
         if [ -d "$user_home" ]; then
-            user=$(basename "$user_home")
-            mkdir -p "$user_home"/{Documents,Downloads,Desktop,Pictures,Videos} 2>/dev/null || true
-            # Don't change ownership - keep as user
+            username=$(basename "$user_home")
+
+            # Skip if username is a wildcard (no users exist)
+            if [ "$username" = "*" ]; then
+                continue
+            fi
+
+            # Skip system users and verify user exists
+            if ! id "$username" >/dev/null 2>&1; then
+                continue
+            fi
+
+            user_uid=$(id -u "$username")
+
+            # Only real users (UID >= 1000 on most systems, >= 500 on RHEL/CentOS)
+            if [ "$user_uid" -ge 1000 ] || [ "$user_uid" -ge 500 ]; then
+                print_info "  Configuring ACL permissions for user: $username (UID: $user_uid)"
+
+                # Create standard directories if missing
+                for dir in Documents Downloads Desktop Pictures Videos Music; do
+                    if [ ! -d "$user_home/$dir" ]; then
+                        su "$username" -c "mkdir -p ~/$dir" 2>/dev/null && \
+                            print_info "    Created missing directory: ~/$dir" || true
+                    fi
+                done
+
+                # Set ACLs on all directories
+                # This grants koraav SPECIFIC write access (not entire group!)
+                for dir in Documents Downloads Desktop Pictures Videos Music .config .local/share; do
+                    if [ -d "$user_home/$dir" ]; then
+                        setfacl -m u:koraav:rwx "$user_home/$dir" 2>/dev/null && \
+                            print_info "    ✓ ACL: koraav → ~/$dir (rwx)" || \
+                            print_warning "    ✗ Could not set ACL on ~/$dir"
+                    fi
+                done
+
+                USERS_CONFIGURED=$((USERS_CONFIGURED + 1))
+            fi
         fi
     done
-    
-    # Also create in /root for root user
-    # mkdir -p /root/{Documents,Downloads,Desktop} 2>/dev/null || true
+
+    if [ "$USERS_CONFIGURED" -eq 0 ]; then
+        print_warning "No user directories configured for canary files"
+        print_info "Canaries will be created in system directories only (/var, /tmp, etc.)"
+    else
+        print_success "Configured canary permissions for $USERS_CONFIGURED user(s)"
+    fi
 
     # Set ownership to koraav user for data directories
     print_info "Setting directory permissions..."
     chown -R koraav:koraav "$INSTALL_DIR/var"
     chown -R koraav:koraav /var/log/koraav
     chown koraav:koraav "$CONFIG_DIR"
-    
+
     # ════════════════════════════════════════════════════════════════
-    # CRITICAL: Snapshot directory must be writable by koraav user
+    # CRITICAL: Snapshot directory - ONLY koraav user can access
     # ════════════════════════════════════════════════════════════════
     chown -R koraav:koraav /.snapshots/koraav
-    chmod 700 /.snapshots/koraav
-    
-    chmod 755 "$INSTALL_DIR/var/quarantine"  # Readable by all (was 700)
+    chmod 700 /.snapshots/koraav  # drwx------ (only koraav)
+
+    # ════════════════════════════════════════════════════════════════
+    # System canary directories - koraav owned, others can read
+    # ════════════════════════════════════════════════════════════════
+    chown -R koraav:koraav /var/lib/systemb/system_cache
+    chown -R koraav:koraav /var/lib/systemb/backup_data
+    chown -R koraav:koraav /var/lib/systemb/log_archive
+    chown -R koraav:koraav /var/lib/systemb/temp_files
+    chmod 755 /var/lib/systemb/system_cache
+    chmod 755 /var/lib/systemb/backup_data
+    chmod 755 /var/lib/systemb/log_archive
+    chmod 755 /var/lib/systemb/temp_files
+
+    chmod 755 "$INSTALL_DIR/var/quarantine"  # Readable by all
     chmod 755 "$INSTALL_DIR/var/run"
     chmod 755 /var/log/koraav
 
@@ -458,24 +553,24 @@ install_files() {
     if [ -d "$BUILD_DIR/KoraAV/data/signatures/yara-rules" ]; then
         mkdir -p "$INSTALL_DIR/share/signatures/yara-rules"
         mkdir -p "$INSTALL_DIR/share/signatures/yara-rules/custom"  # For user-added rules
-        
+
         # Copy all .yar files (recursively, to support subdirectories)
         if ls "$BUILD_DIR/KoraAV/data/signatures/yara-rules/"*.yar >/dev/null 2>&1; then
             cp -r "$BUILD_DIR/KoraAV/data/signatures/yara-rules/"*.yar "$INSTALL_DIR/share/signatures/yara-rules/" 2>/dev/null || true
             print_success "YARA rules installed"
-            
+
             # Count rules
             RULE_COUNT=$(find "$INSTALL_DIR/share/signatures/yara-rules/" -name "*.yar" -o -name "*.yara" | wc -l)
             print_info "Installed $RULE_COUNT YARA rule files"
         else
             print_warning "No YARA rules found in source directory"
         fi
-        
+
         # Set permissions (readable by koraav user)
         chmod 755 "$INSTALL_DIR/share/signatures/yara-rules"
         chmod 755 "$INSTALL_DIR/share/signatures/yara-rules/custom"
         find "$INSTALL_DIR/share/signatures/yara-rules" -type f -name "*.yar*" -exec chmod 644 {} \;
-        
+
         print_info "Users can add custom rules to: $INSTALL_DIR/share/signatures/yara-rules/custom/"
     else
         print_warning "YARA rules directory not found - YARA scanning will be limited"
@@ -533,11 +628,6 @@ detect_c2 = true
 enable_canary_files = true
 canaries_per_directory = 3
 
-# Filesystem snapshots (rollback protection)
-enable_snapshots = true
-snapshot_interval_minutes = 5
-max_snapshots = 6
-
 [thresholds]
 alert_threshold = 61
 block_threshold = 81
@@ -566,10 +656,14 @@ auto_block_network_ransomware = false
 auto_rollback_on_ransomware = true
 
 # System lockdown (OPTIONAL - default OFF)
-# WARNING: Kills non-essential processes, disables USB, blocks network
+# WARNING: re-mounts system as read only and blocks network on detections
 auto_lockdown = false
 
 [snapshots]
+enable_snapshots = true
+snapshot_interval_minutes = 5
+max_snapshots = 6
+
 # Snapshot storage directory & detection type
 snapshot_dir = /.snapshots/koraav
 snapshot_type = auto
@@ -820,33 +914,102 @@ rm -f /usr/local/bin/koraav
 rm -f /usr/local/bin/korad
 
 
-# Cleaning up canary files
+# ═══════════════════════════════════════════════════════════════
+# Remove ACL permissions from user directories
+# ═══════════════════════════════════════════════════════════════
 echo ""
-echo "Cleaning up canary files..."
-canary_count=0
+echo "Removing ACL permissions..."
 
-# Search all protected directories for canary files
-for dir in /home/*/  /home/*/Documents /home/*/Downloads /home/*/Desktop \
-           /home/*/Pictures /home/*/Videos /home/*/.config \
-           /var /var/www /srv /opt /etc; do
-    if [ -d "$dir" ]; then
-        # Find and remove canaries in this directory
-        while IFS= read -r -d '' canary; do
-            echo "  Removing: $canary"
-            rm -f "$canary"
-            ((canary_count++))
-        done < <(find "$dir" -maxdepth 1 -name ".koraav-*" -type f -print0 2>/dev/null)
+acl_removed=0
+for user_home in /home/*; do
+    if [ -d "$user_home" ]; then
+        username=$(basename "$user_home")
+
+        # Skip wildcard
+        if [ "$username" = "*" ]; then
+            continue
+        fi
+
+        # Check if user exists and has UID >= 1000
+        if id "$username" >/dev/null 2>&1; then
+            user_uid=$(id -u "$username")
+
+            if [ "$user_uid" -ge 1000 ] || [ "$user_uid" -ge 500 ]; then
+                echo "  Removing ACLs for user: $username"
+
+                for dir in Documents Downloads Desktop Pictures Videos Music .config .local/share; do
+                    if [ -d "$user_home/$dir" ]; then
+                        # Remove koraav ACL entry
+                        if command -v setfacl >/dev/null 2>&1; then
+                            setfacl -x u:koraav "$user_home/$dir" 2>/dev/null && \
+                                echo "    ✓ Removed ACL from ~/$dir" || true
+                            ((acl_removed++))
+                        fi
+                    fi
+                done
+            fi
+        fi
     fi
 done
 
-if [ "$canary_count" -gt 0 ]; then
-    echo -e "${GREEN}  Removed $canary_count canary files${NC}"
+if [ "$acl_removed" -gt 0 ]; then
+    echo -e "${GREEN}  Removed ACLs from $acl_removed directories${NC}"
 else
-    echo "No canary files found"
+    echo "  No ACLs to remove"
 fi
 
 
+# ═══════════════════════════════════════════════════════════════
+# Cleaning up canary files
+# ═══════════════════════════════════════════════════════════════
+echo ""
+echo "Cleaning up canary files..."
+echo "  (This will clean up canary files created by KoraAV's canary system acting as a library in /lib)"
+canary_count=0
+
+# Note: We can't easily identify ALL canaries since they have random names
+# We'll remove obvious ones and the dedicated canary directories
+echo "  Removing system canary directories..."
+if [ -d "/var/lib/systemb/system_cache" ]; then
+    rm -rf /var/lib/systemb/system_cache
+    echo "    ✓ Removed /var/lib/systemb/system_cache"
+    ((canary_count++))
+fi
+
+if [ -d "/var/lib/systemb/backup_data" ]; then
+    rm -rf /var/lib/systemb/backup_data
+    echo "    ✓ Removed /var/lib/systemb/backup_data"
+    ((canary_count++))
+fi
+
+if [ -d "/var/lib/systemb/log_archive" ]; then
+    rm -rf /var/lib/systemb/log_archive
+    echo "    ✓ Removed /var/lib/systemb/log_archive"
+    ((canary_count++))
+fi
+
+if [ -d "/var/lib/systemb/temp_files" ]; then
+    rm -rf /var/lib/systemb/temp_files
+    echo "    ✓ Removed /var/lib/systemb/temp_files"
+    ((canary_count++))
+fi
+
+if [ "$canary_count" -gt 0 ]; then
+    echo -e "${GREEN}  Removed $canary_count canary files/directories${NC}"
+else
+    echo "  No canary files found"
+fi
+
+echo ""
+echo -e "${YELLOW}Note: Canary files with random names in user directories, hidden and not.${NC}"
+echo -e "${YELLOW}cannot be automatically detected. They are harmless and${NC}"
+echo -e "${YELLOW}can be manually deleted if desired/found.${NC}"
+echo -e "${YELLOW}Please reference the KoraAV github repo source for help on identifying our canary files.${NC}"
+
+
+# ═══════════════════════════════════════════════════════════════
 # Cleaning up snapshots
+# ═══════════════════════════════════════════════════════════════
 echo ""
 echo "Checking for snapshots..."
 
@@ -879,9 +1042,9 @@ if [ -d "/.snapshots/koraav" ]; then
                 echo "  Removed empty /.snapshots directory"
             fi
 
-            echo -e "${GREEN} Snapshots removed (freed $snapshot_size)${NC}"
+            echo -e "${GREEN}  Snapshots removed (freed $snapshot_size)${NC}"
         else
-            echo -e "${YELLOW} Snapshots kept at /.snapshots/koraav${NC}"
+            echo -e "${YELLOW}  Snapshots kept at /.snapshots/koraav${NC}"
             echo "     You can manually delete them later:"
             echo "     sudo chattr -i -R /.snapshots/koraav"
             echo "     sudo rm -rf /.snapshots/koraav"
@@ -892,7 +1055,9 @@ else
 fi
 
 
+# ═══════════════════════════════════════════════════════════════
 # Cleaning up quarantine directory
+# ═══════════════════════════════════════════════════════════════
 echo ""
 echo "Checking quarantine..."
 
@@ -907,15 +1072,17 @@ if [ -d "/var/lib/koraav/quarantine" ]; then
 
         if [[ $quarantine_response =~ ^[Yy]$ ]]; then
             rm -rf /var/lib/koraav/quarantine
-            echo -e "${GREEN} Quarantine cleared${NC}"
+            echo -e "${GREEN}  Quarantine cleared${NC}"
         else
-            echo -e "${YELLOW} Keeping quarantined files at /var/lib/koraav/quarantine${NC}"
+            echo -e "${YELLOW}  Keeping quarantined files at /var/lib/koraav/quarantine${NC}"
         fi
     fi
 fi
 
 
+# ═══════════════════════════════════════════════════════════════
 # Configuration and logs
+# ═══════════════════════════════════════════════════════════════
 echo ""
 
 # Config
@@ -927,7 +1094,7 @@ if [ -d "/etc/koraav" ]; then
         rm -rf /etc/koraav
         echo -e "${GREEN}  Configuration removed${NC}"
     else
-        echo -e "${YELLOW} Configuration kept at /etc/koraav${NC}"
+        echo -e "${YELLOW}  Configuration kept at /etc/koraav${NC}"
     fi
 fi
 
@@ -948,7 +1115,9 @@ if [ -d "/var/log/koraav" ]; then
 fi
 
 
+# ═══════════════════════════════════════════════════════════════
 # Removing remaining directories
+# ═══════════════════════════════════════════════════════════════
 echo ""
 echo "Removing installation directory..."
 rm -rf /opt/koraav
@@ -964,7 +1133,7 @@ fi
 
 echo ""
 echo "═══════════════════════════════════════════════════════════"
-echo -e "${GREEN} KoraAV has been removed${NC}"
+echo -e "${GREEN}  KoraAV has been removed${NC}"
 echo "═══════════════════════════════════════════════════════════"
 echo ""
 
@@ -983,7 +1152,9 @@ if [ ${#kept_items[@]} -gt 0 ]; then
     echo ""
 fi
 
-echo "Thank you for using KoraAV!"
+echo "${GREEN}Thank you for using KoraAV!${NC}"
+echo "${YELLOW}Note: library installation and dependencies were not uninstalled..${NC}"
+echo "${YELLOW}If you wish to uninstall the packages/dependencies, then please refer to the install.sh code starting at line 246 for what was installed.${NC}"
 UNINSTALL_SCRIPT
 
     chmod 755 "$INSTALL_DIR/uninstall.sh"
