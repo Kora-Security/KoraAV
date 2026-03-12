@@ -937,7 +937,7 @@ for user_home in /home/*; do
             if [ "$user_uid" -ge 1000 ] || [ "$user_uid" -ge 500 ]; then
                 echo "  Removing ACLs for user: $username"
 
-                for dir in Documents Downloads Desktop Pictures Videos Music .config .local/share; do
+                for dir in [Documents, Downloads, Desktop, Pictures, Videos, Music, .config, .local/share]; do
                     if [ -d "$user_home/$dir" ]; then
                         # Remove koraav ACL entry
                         if command -v setfacl >/dev/null 2>&1; then
@@ -968,43 +968,18 @@ echo "  (This will clean up canary files created by KoraAV's canary system actin
 canary_count=0
 
 # Note: We can't easily identify ALL canaries since they have random names
-# We'll remove obvious ones and the dedicated canary directories
+# We'll remove the dedicated canary directories
 echo "  Removing system canary directories..."
-if [ -d "/var/lib/systemb/system_cache" ]; then
+if [ -d "/var/lib/systemb" ]; then
     rm -rf /var/lib/systemb/system_cache
-    echo "    ✓ Removed /var/lib/systemb/system_cache"
-    ((canary_count++))
-fi
-
-if [ -d "/var/lib/systemb/backup_data" ]; then
-    rm -rf /var/lib/systemb/backup_data
-    echo "    ✓ Removed /var/lib/systemb/backup_data"
-    ((canary_count++))
-fi
-
-if [ -d "/var/lib/systemb/log_archive" ]; then
-    rm -rf /var/lib/systemb/log_archive
-    echo "    ✓ Removed /var/lib/systemb/log_archive"
-    ((canary_count++))
-fi
-
-if [ -d "/var/lib/systemb/temp_files" ]; then
-    rm -rf /var/lib/systemb/temp_files
-    echo "    ✓ Removed /var/lib/systemb/temp_files"
-    ((canary_count++))
-fi
-
-if [ "$canary_count" -gt 0 ]; then
-    echo -e "${GREEN}  Removed $canary_count canary files/directories${NC}"
-else
-    echo "  No canary files found"
+    echo "    ✓ Removed /var/lib/systemb dedicated canary directory."
 fi
 
 echo ""
-echo -e "${YELLOW}Note: Canary files with random names in user directories, hidden and not.${NC}"
-echo -e "${YELLOW}cannot be automatically detected. They are harmless and${NC}"
-echo -e "${YELLOW}can be manually deleted if desired/found.${NC}"
-echo -e "${YELLOW}Please reference the KoraAV github repo source for help on identifying our canary files.${NC}"
+echo -e "${YELLOW} Note: Canary files with random names in user directories, hidden and not.${NC}"
+echo -e "${YELLOW} cannot be automatically detected. They are harmless and${NC}"
+echo -e "${YELLOW} can be manually deleted if desired/found.${NC}"
+echo -e "${YELLOW} Please reference the KoraAV github repo source for help on identifying our canary files.${NC}"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1133,7 +1108,7 @@ fi
 
 echo ""
 echo "═══════════════════════════════════════════════════════════"
-echo -e "${GREEN}  KoraAV has been removed${NC}"
+echo -e "${GREEN} KoraAV has been removed${NC}"
 echo "═══════════════════════════════════════════════════════════"
 echo ""
 
@@ -1152,9 +1127,9 @@ if [ ${#kept_items[@]} -gt 0 ]; then
     echo ""
 fi
 
-echo "${GREEN}Thank you for using KoraAV!${NC}"
-echo "${YELLOW}Note: library installation and dependencies were not uninstalled..${NC}"
-echo "${YELLOW}If you wish to uninstall the packages/dependencies, then please refer to the install.sh code starting at line 246 for what was installed.${NC}"
+echo "${GREEN} Thank you for using KoraAV!${NC}"
+echo "${YELLOW} Note: library installation and dependencies were not uninstalled..${NC}"
+echo "${YELLOW} If you wish to uninstall the packages/dependencies, then please refer to the install.sh code starting at line 246 for what was installed.${NC}"
 UNINSTALL_SCRIPT
 
     chmod 755 "$INSTALL_DIR/uninstall.sh"
