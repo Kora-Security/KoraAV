@@ -38,11 +38,11 @@ bool NotificationManager::SendThreatAlert(const std::string& threat_type,
     title << "🚨 " << threat_type << " Detected!";
     
     std::ostringstream message;
-    message << "<b>Process:</b> " << process_name << " (PID " << pid << ")\n";
-    message << "<b>Threat Score:</b> " << threat_score << "/100\n\n";
+    message << "Process: " << process_name << " (PID " << pid << ")\n";
+    message << "Threat Score: " << threat_score << "/100\n\n";
     
     if (!indicators.empty()) {
-        message << "<b>Indicators:</b>\n";
+        message << "Indicators:\n";
         int count = 0;
         for (const auto& indicator : indicators) {
             if (count++ >= 3) {
@@ -53,7 +53,7 @@ bool NotificationManager::SendThreatAlert(const std::string& threat_type,
         }
     }
     
-    message << "\n<b>Action:</b> ";
+    message << "\nAction: ";
     if (threat_score >= 96) {
         message << "⚠️ SYSTEM LOCKDOWN INITIATED";
     } else if (threat_score >= 81) {
@@ -79,10 +79,10 @@ bool NotificationManager::SendQuarantineNotification(const std::string& threat_t
     title << "✓ Threat Quarantined";
     
     std::ostringstream message;
-    message << "<b>Type:</b> " << threat_type << "\n";
-    message << "<b>Process:</b> " << process_name << "\n\n";
+    message << "Type: " << threat_type << "\n";
+    message << "Process: " << process_name << "\n\n";
     message << "Malware has been isolated and can no longer harm your system.\n\n";
-    message << "<b>Location:</b> " << quarantine_path;
+    message << "Location: " << quarantine_path;
     
     return SendNotification(title.str(), message.str(), Urgency::NORMAL);
 }
@@ -90,12 +90,12 @@ bool NotificationManager::SendQuarantineNotification(const std::string& threat_t
 bool NotificationManager::SendLockdownNotification() {
     std::string title = "🔒 SYSTEM LOCKDOWN ACTIVE";
     std::string message = 
-        "<b>Critical threat detected!</b>\n\n"
+        "Critical threat detected!\n\n"
         "Your system has been locked down to prevent further damage:\n"
         "  • Filesystem is now read-only\n"
         "  • Network access blocked\n\n"
         "To restore your system, run:\n"
-        "<tt>sudo koraav unlock --all</tt>";
+        "sudo koraav unlock --all";
     
     return SendNotification(title, message, Urgency::CRITICAL);
 }
@@ -123,8 +123,14 @@ bool NotificationManager::SendNotification(const std::string& title,
     std::ostringstream cmd;
     
     // Run as user with their DISPLAY
-    cmd << "su " << username << " -c \"";
+    cmd << "su " << username << " -c '";
     cmd << "DISPLAY=" << user_display << " ";
+    
+    // Try KDE's native notification first (kdialog), fallback to notify-send
+    // KDE doesn't always support HTML in notify-send
+    cmd << "if command -v kdialog >/dev/null 2>&1; then ";
+    cmd << "kdialog --title \"KoraAV\" --passivepopup \"" << EscapeForShell(title) << "\\n\\n" << EscapeForShell(message) << "\" 10; ";
+    cmd << "else ";
     cmd << "notify-send ";
     
     // Set urgency
@@ -142,7 +148,7 @@ bool NotificationManager::SendNotification(const std::string& title,
     
     // Add icon and app name
     cmd << "-i security-high ";
-    cmd << "-a 'KoraAV' ";
+    cmd << "-a KoraAV ";
     
     // Timeout
     if (urgency == Urgency::CRITICAL) {
@@ -151,16 +157,22 @@ bool NotificationManager::SendNotification(const std::string& title,
         cmd << "-t 10000 ";  // 10 seconds
     }
     
-    // Escape title and message for shell
-    std::string escaped_title = EscapeForShell(title);
-    std::string escaped_message = EscapeForShell(message);
+    // Title and message (no HTML tags for better compatibility)
+    cmd << "\"" << EscapeForShell(title) << "\" ";
+    cmd << "\"" << EscapeForShell(message) << "\"; ";
+    cmd << "fi' 2>&1";  // Capture errors
     
-    cmd << "'" << escaped_title << "' ";
-    cmd << "'" << escaped_message << "'";
-    cmd << "\" 2>/dev/null &";
+    // Debug logging
+    std::cout << "[DEBUG] Sending notification to user " << username 
+              << " on DISPLAY " << user_display << std::endl;
+    std::cout << "[DEBUG] Command: " << cmd.str() << std::endl;
     
     // Execute
     int result = system(cmd.str().c_str());
+    
+    if (result != 0) {
+        std::cerr << "⚠️  Notification command failed (exit " << result << ")" << std::endl;
+    }
     
     return (result == 0);
 }

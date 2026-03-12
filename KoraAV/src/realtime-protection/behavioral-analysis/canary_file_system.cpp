@@ -47,7 +47,8 @@ void CanaryFileSystem::CreateCanaries(int count_per_directory) {
     
     for (const auto& dir : directories) {
         for (int i = 0; i < count_per_directory; ++i) {
-            std::string canary_name = GenerateCanaryName();
+            // Generate context-aware canary name based on directory
+            std::string canary_name = GenerateCanaryName(dir);
             
             if (CreateCanaryFile(dir, canary_name)) {
                 CanaryFile canary;
@@ -120,19 +121,121 @@ bool CanaryFileSystem::CreateCanaryFile(const std::string& directory, const std:
     return true;
 }
 
-std::string CanaryFileSystem::GenerateCanaryName() {
-    // Generate random hidden filename that looks like system cache
-    // TODO: Make ".koraav-" random as well so malware can't just look for hidden files starting with such and ignore them.
-    std::string prefix = ".koraav-";
-    std::string suffix = GetRandomHex(8);
+std::string CanaryFileSystem::GenerateCanaryName(const std::string& directory) {
+    // ═══════════════════════════════════════════════════════════════
+    // CONTEXT-AWARE CANARY NAMING
+    // ═══════════════════════════════════════════════════════════════
+    // Inspect the directory and blend in with existing files:
+    //  - If dir has .txt files → create .txt canaries
+    //  - If dir has hidden files → create hidden canaries
+    //  - If dir has .doc/.pdf → create similar canaries
+    //  - Match the style of surroundings!
+    // ═══════════════════════════════════════════════════════════════
     
-    // Random extension to blend in
-    std::vector<std::string> extensions = {".txt", ".conf", ".cache", ".tmp", ".log", ".doc"};
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dis(0, extensions.size() - 1);
     
-    return prefix + suffix + extensions[dis(gen)];
+    // Analyze existing files in directory
+    std::vector<std::string> existing_extensions;
+    int hidden_count = 0;
+    int visible_count = 0;
+    
+    try {
+        for (const auto& entry : fs::directory_iterator(directory)) {
+            if (entry.is_regular_file()) {
+                std::string filename = entry.path().filename().string();
+                
+                // Count hidden vs visible
+                if (filename[0] == '.') {
+                    hidden_count++;
+                } else {
+                    visible_count++;
+                }
+                
+                // Collect extensions
+                size_t dot_pos = filename.find_last_of('.');
+                if (dot_pos != std::string::npos && dot_pos > 0) {
+                    std::string ext = filename.substr(dot_pos);
+                    existing_extensions.push_back(ext);
+                }
+            }
+        }
+    } catch (...) {
+        // If can't read directory, use generic approach
+    }
+    
+    // Decide: hidden or visible based on directory content
+    bool make_hidden;
+    if (hidden_count + visible_count == 0) {
+        // Empty directory - 50/50
+        make_hidden = (rd() % 2 == 0);
+    } else {
+        // Match the ratio of hidden:visible files
+        int total = hidden_count + visible_count;
+        int hidden_probability = (hidden_count * 100) / total;
+        make_hidden = ((rd() % 100) < hidden_probability);
+    }
+    
+    // Choose extension based on what exists in directory
+    std::string extension;
+    if (!existing_extensions.empty() && (rd() % 3 != 0)) {  // 66% use existing
+        std::uniform_int_distribution<> ext_dis(0, existing_extensions.size() - 1);
+        extension = existing_extensions[ext_dis(gen)];
+    } else {  // 33% use generic extensions
+        std::vector<std::string> generic_exts = {
+            ".txt", ".doc", ".docx", ".pdf", ".conf", ".cfg", 
+            ".cache", ".tmp", ".log", ".dat", ".bak", ".old"
+        };
+        std::uniform_int_distribution<> ext_dis(0, generic_exts.size() - 1);
+        extension = generic_exts[ext_dis(gen)];
+    }
+    
+    // Generate base filename
+    std::vector<std::string> prefixes = {
+        "config", "temp", "cache", "backup", "notes", "data", 
+        "settings", "sync", "index", "metadata", "thumbnail",
+        "preview", "draft", "archive", "document", "file",
+        "image", "photo", "screenshot", "recording", "download"
+    };
+    
+    std::vector<std::string> suffixes = {
+        "backup", "temp", "old", "new", "copy", "draft",
+        "final", "v1", "v2", "v3", "2024", "2025", "2026", "data"
+    };
+    
+    std::uniform_int_distribution<> prefix_dis(0, prefixes.size() - 1);
+    std::uniform_int_distribution<> suffix_dis(0, suffixes.size() - 1);
+    std::uniform_int_distribution<> pattern_dis(0, 3);
+    
+    std::string base;
+    switch (pattern_dis(gen)) {
+        case 0:
+            // "config_backup"
+            base = prefixes[prefix_dis(gen)] + "_" + suffixes[suffix_dis(gen)];
+            break;
+        case 1:
+            // "temp_20240309"
+            base = prefixes[prefix_dis(gen)] + "_" + 
+                   std::to_string(20240000 + (rd() % 10000));
+            break;
+        case 2:
+            // "file_a1b2c3d4"
+            base = prefixes[prefix_dis(gen)] + "_" + GetRandomHex(8);
+            break;
+        case 3:
+            // "data-backup"
+            base = prefixes[prefix_dis(gen)] + "-" + suffixes[suffix_dis(gen)];
+            break;
+    }
+    
+    std::string filename;
+    if (make_hidden) {
+        filename = "." + base + extension;
+    } else {
+        filename = base + extension;
+    }
+    
+    return filename;
 }
 
 std::string CanaryFileSystem::GenerateCanaryContent(const std::string& directory) {

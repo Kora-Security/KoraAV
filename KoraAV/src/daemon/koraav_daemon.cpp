@@ -257,7 +257,7 @@ bool KoraAVDaemon::Initialize(const std::string& config_path) {
     
     // Initialize canary file system
     canary_system_ = std::make_unique<realtime::CanaryFileSystem>();
-    if (!canary_system_->Initialize(2)) {  // 2 canaries per directory
+    if (!canary_system_->Initialize(config_.canaries_per_directory)) {
         std::cerr << "Warning: Canary file system initialization failed" << std::endl;
         return false;
     }
@@ -567,10 +567,6 @@ bool KoraAVDaemon::LoadConfiguration(const std::string& config_path) {
             // NEW: Canary settings
             else if (key == "enable_canary_files") config_.enable_canary_files = (value == "true");
             else if (key == "canaries_per_directory") config_.canaries_per_directory = std::stoi(value);
-            // NEW: Snapshot settings
-            else if (key == "enable_snapshots") config_.enable_snapshots = (value == "true");
-            else if (key == "snapshot_interval_minutes") config_.snapshot_interval_minutes = std::stoi(value);
-            else if (key == "max_snapshots") config_.max_snapshots = std::stoi(value);
         }
         else if (current_section == "thresholds") {
             if (key == "alert_threshold") config_.alert_threshold = std::stoi(value);
@@ -599,6 +595,9 @@ bool KoraAVDaemon::LoadConfiguration(const std::string& config_path) {
         else if (current_section == "snapshots") {
             if (key == "snapshot_dir") config_.snapshot_dir = value;
             else if (key == "snapshot_type") config_.snapshot_type = value;
+            else if (key == "enable_snapshots") config_.enable_snapshots = (value == "true");
+            else if (key == "snapshot_interval_minutes") config_.snapshot_interval_minutes = std::stoi(value);
+            else if (key == "max_snapshots") config_.max_snapshots = std::stoi(value);
         }
         else if (current_section == "logging") {
             if (key == "log_path") config_.log_path = value;

@@ -39,7 +39,7 @@ public:
      * @param canaries_per_directory Number of canaries per dir (1-3 recommended)
      * @return true if initialized successfully
      */
-    bool Initialize(int canaries_per_directory = 2);
+    bool Initialize(int canaries_per_directory = 2); // default here is 2 if no config var or otherwise was passed to Initialize.
     
     /**
      * Check if a file path is a canary
@@ -83,24 +83,52 @@ private:
     std::unordered_set<std::string> canary_paths_;  // Fast O(1) lookup
     mutable std::mutex canaries_mutex_;
     
-    // Protected directories (will be expanded for all users)
+    // ════════════════════════════════════════════════════════════
+    // ENTERPRISE APPROACH: Canaries in Real User + System Directories
+    // ════════════════════════════════════════════════════════════
+    // Strategy 1: Real user directories (installer grants permission)
+    // Strategy 2: World-writable system directories
+    // Strategy 3: Dedicated system canary directories
+    //
+    // This is how CrowdStrike Falcon and SentinelOne work.
+    // ════════════════════════════════════════════════════════════
+    
     std::vector<std::string> protected_dir_patterns_ = {
-        "/root",
-        "/home/*",
-        "/home/*/",
+        // REAL USER DIRECTORIES
         "/home/*/Documents",
         "/home/*/Downloads",
         "/home/*/Desktop",
         "/home/*/Pictures",
         "/home/*/Videos",
+        "/home/*/Music",
         "/home/*/.config",
-        "/home/*/.ssh",
-        "/var/",
-        "/var/www",
-        "/srv",
-        "/opt",
-        "/etc/"
+        "/home/*/.local/share",
+        
+        // ═══════════════════════════════════════════════════════
+        // WORLD-WRITABLE SYSTEM DIRECTORIES (1777 permissions)
+        // ═══════════════════════════════════════════════════════
+        "/tmp",
+        "/var/tmp",
+        
+        // ═══════════════════════════════════════════════════════
+        // DEDICATED SYSTEM CANARY DIRECTORIES (koraav owned)
+        // These look like real system directories to ransomware
+        // ═══════════════════════════════════════════════════════
+        "/var/lib/systemb/system_cache",
+        "/var/lib/systemb/backup_data",
+        "/var/lib/systemb/log_archive",
+        "/var/lib/systemb/temp_files",
+        
+        // ═══════════════════════════════════════════════════════
+        // SYSTEM DIRECTORIES (if writable by koraav)
+        // ═══════════════════════════════════════════════════════
+        "/var/log",      // Usually writable
+        "/var/spool",    // Usually writable
+        
+        // Root user home
+        "/root"
     };
+
     
     // Internal statistics (with atomics)
     struct InternalStats {
@@ -115,7 +143,7 @@ private:
     void DeleteOldCanaries();
     void CreateCanaries(int count_per_directory);
     bool CreateCanaryFile(const std::string& directory, const std::string& name);
-    std::string GenerateCanaryName();
+    std::string GenerateCanaryName(const std::string& directory);
     std::string GenerateCanaryContent(const std::string& directory);
     std::vector<std::string> ExpandDirectoryPatterns();
     std::string GetRandomHex(int length);
