@@ -268,7 +268,8 @@ install_dependencies_debian() {
         libcap2-bin \
         libnotify-bin \
         libsystemd-dev \
-        acl
+        acl \
+        socat
 
     print_info "Installing eBPF tools..."
     # Try to install bpftool from linux-tools
@@ -358,7 +359,8 @@ install_dependencies_arch() {
         tar \
         p7zip \
         unrar \
-        acl
+        acl \
+        socat
 
     print_success "All dependencies installed"
 }
@@ -901,6 +903,43 @@ if [ "$response" != "yes" ]; then
 fi
 
 echo ""
+
+# ═══════════════════════════════════════════════════════════════
+# CRITICAL: Query canaries BEFORE stopping daemon!
+# ═══════════════════════════════════════════════════════════════
+echo "Querying daemon for active canary files..."
+
+canary_count=0
+if systemctl is-active --quiet korad; then
+    # Daemon is running - query via socket
+    if command -v socat >/dev/null 2>&1; then
+        CANARY_LIST=$(echo "LIST_CANARIES" | socat - UNIX-CONNECT:/var/run/koraav/korad.sock 2>/dev/null)
+
+        if [ $? -eq 0 ] && [ -n "$CANARY_LIST" ] && [ "$CANARY_LIST" != "No canaries active" ]; then
+            echo "  Daemon reported canaries found"
+
+            # Delete each canary
+            while IFS= read -r canary; do
+                if [ -f "$canary" ]; then
+                    rm -f "$canary"
+                    echo "    ✓ Removed: $canary"
+                    ((canary_count++))
+                fi
+            done <<< "$CANARY_LIST"
+
+            echo -e "${GREEN}  Removed $canary_count canary files via daemon query${NC}"
+        else
+            echo "  Daemon reported no active canaries or query failed"
+        fi
+    else
+        echo "  socat not found - cannot query daemon"
+        echo "  Install socat: apt install socat  OR  pacman -S socat"
+    fi
+else
+    echo "  Daemon not running - cannot query for canaries"
+fi
+
+echo ""
 echo "Stopping KoraAV service..."
 systemctl stop korad.service 2>/dev/null || true
 systemctl disable korad.service 2>/dev/null || true
@@ -960,26 +999,35 @@ fi
 
 
 # ═══════════════════════════════════════════════════════════════
-# Cleaning up canary files
+# Cleaning up remaining canary files
 # ═══════════════════════════════════════════════════════════════
 echo ""
-echo "Cleaning up canary files..."
-echo "  (This will clean up canary files created by KoraAV's canary system acting as a library in /lib)"
-canary_count=0
+echo "Cleaning up canary system directories..."
 
-# Note: We can't easily identify ALL canaries since they have random names
-# We'll remove the dedicated canary directories
-echo "  Removing system canary directories..."
+# Remove the dedicated canary directories
 if [ -d "/var/lib/systemb" ]; then
+    echo "  Removing /var/lib/systemb/* (dedicated canary directories)"
     rm -rf /var/lib/systemb/system_cache
-    echo "    ✓ Removed /var/lib/systemb dedicated canary directory."
+    rm -rf /var/lib/systemb/backup_data
+    rm -rf /var/lib/systemb/log_archive
+    rm -rf /var/lib/systemb/temp_files
+    echo "    ✓ Removed system canary directories"
+
+    # Remove parent if empty
+    if [ -z "$(ls -A /var/lib/systemb 2>/dev/null)" ]; then
+        rmdir /var/lib/systemb 2>/dev/null && echo "    ✓ Removed empty /var/lib/systemb directory"
+    fi
 fi
 
-echo ""
-echo -e "${YELLOW} Note: Canary files with random names in user directories, hidden and not.${NC}"
-echo -e "${YELLOW} cannot be automatically detected. They are harmless and${NC}"
-echo -e "${YELLOW} can be manually deleted if desired/found.${NC}"
-echo -e "${YELLOW} Please reference the KoraAV github repo source for help on identifying our canary files.${NC}"
+if [ "$canary_count" -gt 0 ]; then
+    echo ""
+    echo -e "${GREEN}✓ Removed $canary_count canary files (queried from daemon)${NC}"
+else
+    echo ""
+    echo -e "${YELLOW}Note: Could not query daemon for canary list.${NC}"
+    echo -e "${YELLOW}Random-named canary files in user directories remain.${NC}"
+    echo -e "${YELLOW}They are harmless and can be manually deleted if desired.${NC}"
+fi
 
 
 # ═══════════════════════════════════════════════════════════════
