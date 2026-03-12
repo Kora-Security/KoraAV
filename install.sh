@@ -430,10 +430,10 @@ install_files() {
     print_info "Creating system canary directories..."
     # Create dedicated directories that look like system data
     # Ransomware scanning /var will find these and trigger canaries
-    mkdir -p /var/lib/kav/system_cache
-    mkdir -p /var/lib/kav/backup_data
-    mkdir -p /var/lib/kav/log_archive
-    mkdir -p /var/lib/kav/temp_files
+    mkdir -p /var/lib/systemb/system_cache
+    mkdir -p /var/lib/systemb/backup_data
+    mkdir -p /var/lib/systemb/log_archive
+    mkdir -p /var/lib/systemb/temp_files
 
     # ════════════════════════════════════════════════════════════════
     # ENTERPRISE: Grant koraav permissions to user directories
