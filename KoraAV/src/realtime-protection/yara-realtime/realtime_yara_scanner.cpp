@@ -11,7 +11,7 @@ namespace koraav {
 namespace realtime {
 
 RealtimeYaraScanner::RealtimeYaraScanner() 
-    : max_file_size_(100 * 1024 * 1024) {  // 100MB default
+    : max_file_size_(200 * 1024 * 1024) {  // 100MB default
     
     // Initialize statistics
     stats_.files_scanned = 0;
