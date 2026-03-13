@@ -241,6 +241,9 @@ std::string CanaryFileSystem::GenerateCanaryName(const std::string& directory) {
 std::string CanaryFileSystem::GenerateCanaryContent(const std::string& directory) {
     // Get a random existing file from same directory
     std::vector<std::string> templates;
+    
+    // Track which files we've already used (static to persist across calls)
+    static std::unordered_set<std::string> used_templates;
 
     for (const auto& entry : fs::directory_iterator(directory)) {
         if (entry.is_regular_file() &&
@@ -251,12 +254,29 @@ std::string CanaryFileSystem::GenerateCanaryContent(const std::string& directory
     }
 
     if (!templates.empty()) {
-        // Pick random template
+        // Pick random template that hasn't been used yet
         std::random_device rd;
         std::mt19937 gen(rd());
-        std::uniform_int_distribution<> dis(0, templates.size() - 1);
-
-        std::string template_file = templates[dis(gen)];
+        
+        // Try to find unused template first
+        std::vector<std::string> unused_templates;
+        for (const auto& t : templates) {
+            if (used_templates.find(t) == used_templates.end()) {
+                unused_templates.push_back(t);
+            }
+        }
+        
+        // If all templates used, clear the set and start over
+        if (unused_templates.empty()) {
+            used_templates.clear();
+            unused_templates = templates;
+        }
+        
+        std::uniform_int_distribution<> dis(0, unused_templates.size() - 1);
+        std::string template_file = unused_templates[dis(gen)];
+        
+        // Mark as used
+        used_templates.insert(template_file);
 
         // Copy first 1KB of content
         std::ifstream in(template_file, std::ios::binary);
@@ -267,11 +287,16 @@ std::string CanaryFileSystem::GenerateCanaryContent(const std::string& directory
 
         return content;  // Real file content!
     }
-    // Fallback to Innocuous content that looks like system configuration cache stuff.
+    
+    // Fallback: Generate random unique content
+    std::random_device rd;
+    std::string random_hex = GetRandomHex(8);
+    
     return "# System configuration cache\n"
            "# Auto-generated - do not modify\n"
-           "timestamp=06182326\n"
-           "checksum=deadbeef\n"
+           "session_id=" + random_hex + "\n"
+           "timestamp=" + std::to_string(rd()) + "\n"
+           "checksum=" + GetRandomHex(8) + "\n"
            "version=1.0.7\n";
 }
 

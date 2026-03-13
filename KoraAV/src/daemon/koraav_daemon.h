@@ -8,6 +8,7 @@
 #include "../realtime-protection/behavioral-analysis/c2_detector.h"
 #include "../realtime-protection/behavioral-analysis/snapshot_system.h"
 #include "../realtime-protection/behavioral-analysis/canary_file_system.h"
+#include "control_socket.h"
 #include "../common/quarantine_manager.h"
 #include "../common/notification_manager.h"
 #include "../common/yara_manager.h"
@@ -153,6 +154,9 @@ namespace daemon {
 
         // Notification manager
         std::unique_ptr<NotificationManager> notification_manager_;
+        
+        // Control socket (for queries/commands - root-only)
+        std::unique_ptr<ControlSocket> control_socket_;
 
         // eBPF objects and programs
         bpf_object* file_monitor_obj_;
@@ -198,6 +202,14 @@ namespace daemon {
         std::atomic<uint64_t> process_events_received_{0};
         std::atomic<uint64_t> network_events_received_{0};
         std::atomic<uint64_t> threats_detected_{0};
+        
+        // Canary enumeration tracking (detect ransomware scanning phase)
+        struct CanaryAccessRecord {
+            std::vector<std::chrono::steady_clock::time_point> access_times;
+            std::mutex mutex;
+        };
+        std::unordered_map<uint32_t, CanaryAccessRecord> canary_enumeration_tracker_;
+        std::mutex enumeration_tracker_mutex_;
 
 
         YaraManager* yara_manager_;

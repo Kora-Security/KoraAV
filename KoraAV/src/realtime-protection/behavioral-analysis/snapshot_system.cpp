@@ -252,8 +252,11 @@ namespace realtime {
             // -H: preserve hard links
             // --link-dest: use hardlinks for unchanged files (VERY space efficient)
             // --exclude: skip unnecessary directories
+            // --no-perms --no-owner --no-group: Don't try to preserve ownership
+            //   (koraav user can't set ownership of files it doesn't own)
 
             std::string rsync_cmd = "rsync -aH --quiet "
+            "--no-perms --no-owner --no-group "
             "--exclude='/dev/' "
             "--exclude='/proc/' "
             "--exclude='/sys/' "
@@ -262,6 +265,7 @@ namespace realtime {
             "--exclude='/.snapshots/' "
             "--exclude='/var/cache/' "
             "--exclude='/var/tmp/' "
+            "--exclude='/var/log/' "
             "\"" + dir + "/\" \"" + target + "/\" 2>&1";
 
             std::string output = ExecuteCommand(rsync_cmd);

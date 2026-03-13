@@ -141,6 +141,7 @@ target_link_libraries(koraav_realtime
 # Daemon library
 add_library(koraav_daemon STATIC
     src/daemon/koraav_daemon.cpp
+    src/daemon/control_socket.cpp
     src/daemon/secure_ipc.cpp
 )
 

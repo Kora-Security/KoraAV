@@ -271,6 +271,49 @@ bool KoraAVDaemon::Initialize(const std::string& config_path) {
     c2_detector_ = std::make_unique<realtime::C2Detector>();
     std::cout << "✓ C2 detector initialized" << std::endl;
     
+    // ════════════════════════════════════════════════════════════
+    // Initialize control socket (root-only access)
+    // ════════════════════════════════════════════════════════════
+    control_socket_ = std::make_unique<ControlSocket>("/var/run/koraav/korad.sock");
+    
+    // Register command handlers
+    control_socket_->RegisterHandler("LIST_CANARIES", [this]() {
+        if (!canary_system_) {
+            return std::string("ERROR: Canary system not initialized\n");
+        }
+        
+        auto paths = canary_system_->GetAllCanaryPaths();
+        std::string response;
+        for (const auto& path : paths) {
+            response += path + "\n";
+        }
+        return response.empty() ? "No canaries active\n" : response;
+    });
+    
+    control_socket_->RegisterHandler("STATUS", [this]() {
+        std::ostringstream oss;
+        oss << "KoraAV Daemon Status\n";
+        oss << "====================\n";
+        oss << "Running: " << (running_ ? "Yes" : "No") << "\n";
+        oss << "Threats detected: " << threats_detected_ << "\n";
+        oss << "Active canaries: " << (canary_system_ ? canary_system_->GetAllCanaryPaths().size() : 0) << "\n";
+        return oss.str();
+    });
+    
+    control_socket_->RegisterHandler("STATS", [this]() {
+        // Return statistics
+        std::ostringstream oss;
+        oss << "KoraAV Statistics\n";
+        oss << "=================\n";
+        oss << "Threats detected: " << threats_detected_ << "\n";
+        return oss.str();
+    });
+    
+    if (!control_socket_->Start()) {
+        std::cerr << "Warning: Control socket failed to start" << std::endl;
+        // Don't fail initialization - socket is optional
+    }
+    
     // Secure our bits
     SetSecureBits();
 
@@ -470,7 +513,7 @@ bool KoraAVDaemon::LoadConfiguration(const std::string& config_path) {
 
     // NEW: Canary defaults
     config_.enable_canary_files = true;
-    config_.canaries_per_directory = 3;
+    config_.canaries_per_directory = 2;
 
     // NEW: Snapshot defaults
     config_.enable_snapshots = true;
@@ -986,42 +1029,152 @@ void KoraAVDaemon::AnalyzeFileEvents() {
 
 
         // ═══════════════════════════════════════════════════════════
-        // CHECK CANARY FILES (Instant Trigger)
+        // CHECK CANARY FILES (Enterprise-Grade Detection)
+        // ═══════════════════════════════════════════════════════════
+        // Detection Strategy (matches CrowdStrike/SentinelOne):
+        //   1. PRIMARY: Trigger on WRITE/MODIFY/DELETE/RENAME (instant kill)
+        //   2. SECONDARY: Track rapid enumeration (alert, monitor closely)
         // ═══════════════════════════════════════════════════════════
         
         if (canary_system_ && canary_system_->IsCanaryFile(filename)) {
-            std::cout << "🚨 CANARY FILE TRIGGERED!" << std::endl;
-            std::cout << "   File: " << filename << std::endl;
-            std::cout << "   Process: " << proc_name << " (PID " << evt.tgid << ")" << std::endl;
+            // ═══════════════════════════════════════════════════════
+            // STEP 1: Determine operation type
+            // ═══════════════════════════════════════════════════════
+            bool is_write_operation = false;
+            bool is_modify_operation = false;
+            std::string operation_type = "UNKNOWN";
             
-            // INSTANT KILL - No scoring, no delay
-            KillProcess(evt.tgid);
-            
-            // Quarantine
-            if (quarantine_manager_) {
-                quarantine_manager_->QuarantineProcess(evt.tgid, "CANARY_FILE_TRIGGERED");
+            // Check file open flags
+            // O_RDONLY = 0, O_WRONLY = 1, O_RDWR = 2
+            int access_mode = evt.flags & 0x3;
+            if (access_mode == 1 || access_mode == 2) {  // O_WRONLY or O_RDWR
+                is_write_operation = true;
+                operation_type = (access_mode == 1) ? "WRITE" : "READ+WRITE";
             }
             
-            // Rollback filesystem
-            if (snapshot_system_) {
-                std::cout << "🔄 Rolling back filesystem..." << std::endl;
-                if (snapshot_system_->RollbackToLatestSnapshot()) {
-                    std::cout << "✅ Filesystem rolled back successfully!" << std::endl;
+            // Check for modification flags
+            if (evt.flags & 64) {    // O_CREAT (creating new file)
+                is_modify_operation = true;
+                operation_type = "CREATE";
+            }
+            if (evt.flags & 512) {   // O_TRUNC (truncating existing file)
+                is_modify_operation = true;
+                operation_type = "TRUNCATE";
+            }
+            if (evt.flags & 1024) {  // O_APPEND (appending to file)
+                is_modify_operation = true;
+                operation_type = "APPEND";
+            }
+            
+            // Note: DELETE and RENAME are captured by different syscalls
+            // and would need separate eBPF hooks (unlink, rename syscalls)
+            // For now, we detect them via WRITE attempts
+            
+            // ═══════════════════════════════════════════════════════
+            // STEP 2: INSTANT KILL on write operations
+            // ═══════════════════════════════════════════════════════
+            if (is_write_operation || is_modify_operation) {
+                std::cout << "🚨 CANARY FILE TRIGGERED!" << std::endl;
+                std::cout << "   File: " << filename << std::endl;
+                std::cout << "   Process: " << proc_name << " (PID " << evt.tgid << ")" << std::endl;
+                std::cout << "   Operation: " << operation_type << std::endl;
+                std::cout << "   Flags: 0x" << std::hex << evt.flags << std::dec << std::endl;
+                
+                // Check if whitelisted before killing
+                std::string exe_path = GetProcessExecutablePath(evt.tgid);
+                if (ShouldIgnoreProcess(evt.tgid, exe_path)) {
+                    std::cout << "   ✓ Process whitelisted, skipping kill" << std::endl;
+                    continue;
+                }
+                
+                // INSTANT KILL - No scoring, no delay
+                KillProcess(evt.tgid);
+                
+                // Quarantine
+                if (quarantine_manager_) {
+                    quarantine_manager_->QuarantineProcess(evt.tgid, "CANARY_FILE_TRIGGERED");
+                }
+                
+                // Rollback filesystem
+                if (snapshot_system_) {
+                    std::cout << "🔄 Rolling back filesystem..." << std::endl;
+                    if (snapshot_system_->RollbackToLatestSnapshot()) {
+                        std::cout << "✅ Filesystem rolled back successfully!" << std::endl;
+                    }
+                }
+                
+                // Alert
+                if (notification_manager_) {
+                    notification_manager_->SendThreatAlert(
+                        "Ransomware (Canary Triggered)",
+                        proc_name,
+                        evt.tgid,
+                        100,  // Max score
+                        {"Hidden canary file modified (" + operation_type + ") - ransomware detected instantly"}
+                    );
+                }
+                
+                threats_detected_++;
+            } 
+            
+            // ═══════════════════════════════════════════════════════
+            // STEP 3: Track rapid enumeration (even for READ operations)
+            // ═══════════════════════════════════════════════════════
+            else {
+                // READ-only operation - track for enumeration detection
+                auto now = std::chrono::steady_clock::now();
+                
+                {
+                    std::lock_guard<std::mutex> lock(enumeration_tracker_mutex_);
+                    auto& record = canary_enumeration_tracker_[evt.tgid];
+                    std::lock_guard<std::mutex> record_lock(record.mutex);
+                    
+                    // Remove accesses older than 5 seconds
+                    auto cutoff = now - std::chrono::seconds(5);
+                    record.access_times.erase(
+                        std::remove_if(record.access_times.begin(), record.access_times.end(),
+                            [cutoff](const auto& t) { return t < cutoff; }),
+                        record.access_times.end()
+                    );
+                    
+                    // Add current access
+                    record.access_times.push_back(now);
+                    
+                    // Check for rapid enumeration (3+ canaries in 5 seconds)
+                    if (record.access_times.size() >= 3) {
+                        std::cout << "⚠️  SUSPICIOUS: Rapid canary enumeration detected!" << std::endl;
+                        std::cout << "   Process: " << proc_name << " (PID " << evt.tgid << ")" << std::endl;
+                        std::cout << "   Canaries accessed: " << record.access_times.size() 
+                                  << " in 5 seconds" << std::endl;
+                        std::cout << "   Action: ALERT (monitoring closely - will kill if writes)" << std::endl;
+                        
+                        // Alert but don't kill (might be indexer)
+                        if (notification_manager_) {
+                            notification_manager_->SendThreatAlert(
+                                "Suspicious File Scanning",
+                                proc_name,
+                                evt.tgid,
+                                65,  // Medium-high severity
+                                {
+                                    "Process rapidly accessed " + std::to_string(record.access_times.size()) + 
+                                    " canary files in 5 seconds",
+                                    "Possible ransomware scanning phase",
+                                    "Monitoring closely - will terminate if write attempted"
+                                }
+                            );
+                        }
+                        
+                        // Clear the record after alerting (don't spam)
+                        record.access_times.clear();
+                    } else {
+                        // Just log it
+                        std::cout << "[DEBUG] Canary file READ (ignored): " << filename 
+                                  << " by " << proc_name << " (PID " << evt.tgid << ")" 
+                                  << " [" << record.access_times.size() << "/3 in 5s]" << std::endl;
+                    }
                 }
             }
             
-            // Alert
-            if (notification_manager_) {
-                notification_manager_->SendThreatAlert(
-                    "CANARY_FILE_TRIGGERED",
-                    proc_name,
-                    evt.tgid,
-                    100,  // Max score
-                    {"Hidden canary file accessed - ransomware detected instantly"}
-                );
-            }
-            
-            threats_detected_++;
             continue;  // Skip further processing
         }
 
@@ -1569,10 +1722,31 @@ bool KoraAVDaemon::ShouldIgnoreProcess(uint32_t tgid, const std::string& exe_pat
     // TODO: Load whitelist from config_.process_whitelist_file
     // For now, hardcode common legitimate processes
     std::vector<std::string> whitelist = {
+        // System management
         "systemd", "init", "sshd", "cron",
         "apt", "apt-get", "dpkg", "rpm", "yum", "dnf",
+        
+        // Backup tools
         "rsync", "rsnapshot", "duplicity", "borg",
-        "mysqld", "postgres", "mongod", "redis-server"
+        
+        // Databases
+        "mysqld", "postgres", "mongod", "redis-server",
+        
+        // KDE/Qt processes (file indexing, thumbnails, etc.)
+        "kioworker", "kiod5", "kioslave", "baloo_file",
+        "baloo_file_extractor", "kdeinit5", "kded5",
+        "plasma", "plasmashell", "kwin", "krunner",
+        
+        // GNOME processes
+        "gnome-shell", "nautilus", "tracker-miner",
+        "tracker-extract", "gvfs", "gvfsd",
+        
+        // File indexers (all desktops)
+        "updatedb", "locate", "mlocate",
+        
+        // System services
+        "dbus-daemon", "systemd-logind", "polkitd",
+        "udisksd", "upowerd", "NetworkManager"
     };
     
     // Extract process name from path

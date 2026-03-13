@@ -39,7 +39,7 @@ public:
      * @param canaries_per_directory Number of canaries per dir (1-3 recommended)
      * @return true if initialized successfully
      */
-    bool Initialize(int canaries_per_directory = 2); // default here is 2 if no config var or otherwise was passed to Initialize.
+    bool Initialize(int canaries_per_directory = 2);
     
     /**
      * Check if a file path is a canary
@@ -94,7 +94,9 @@ private:
     // ════════════════════════════════════════════════════════════
     
     std::vector<std::string> protected_dir_patterns_ = {
-        // REAL USER DIRECTORIES
+        // ═══════════════════════════════════════════════════════
+        // REAL USER DIRECTORIES (installer grants g+w permission)
+        // ═══════════════════════════════════════════════════════
         "/home/*/Documents",
         "/home/*/Downloads",
         "/home/*/Desktop",
@@ -147,6 +149,13 @@ private:
     std::string GenerateCanaryContent(const std::string& directory);
     std::vector<std::string> ExpandDirectoryPatterns();
     std::string GetRandomHex(int length);
+    
+public:
+    // Get all canary paths (for cleanup/uninstall)
+    std::vector<std::string> GetAllCanaryPaths() const {
+        std::lock_guard<std::mutex> lock(canaries_mutex_);
+        return std::vector<std::string>(canary_paths_.begin(), canary_paths_.end());
+    }
 };
 
 } // namespace realtime
