@@ -8,7 +8,6 @@
 #include <sys/types.h>
 #include <fcntl.h>
 #include <errno.h>
-#include <map>
 
 namespace koraav {
 namespace daemon {
@@ -24,7 +23,20 @@ ControlSocket::~ControlSocket() {
 bool ControlSocket::Start() {
     // Create socket directory if doesn't exist
     std::string socket_dir = socket_path_.substr(0, socket_path_.find_last_of('/'));
-    mkdir(socket_dir.c_str(), 0755);
+    
+    // Create directory with proper error handling
+    if (mkdir(socket_dir.c_str(), 0755) != 0 && errno != EEXIST) {
+        std::cerr << "Failed to create socket directory " << socket_dir 
+                  << ": " << strerror(errno) << std::endl;
+        std::cerr << "Trying to create parent directories..." << std::endl;
+        
+        // Try creating parent directories
+        std::string cmd = "mkdir -p " + socket_dir;
+        if (system(cmd.c_str()) != 0) {
+            std::cerr << "Failed to create socket directory (even with mkdir -p)" << std::endl;
+            return false;
+        }
+    }
     
     // Remove old socket file if exists
     unlink(socket_path_.c_str());
