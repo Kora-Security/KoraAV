@@ -914,10 +914,10 @@ if systemctl is-active --quiet korad; then
     # Daemon is running - query via socket
     if command -v socat >/dev/null 2>&1; then
         CANARY_LIST=$(echo "LIST_CANARIES" | socat - UNIX-CONNECT:/var/run/koraav/korad.sock 2>/dev/null)
-
+        
         if [ $? -eq 0 ] && [ -n "$CANARY_LIST" ] && [ "$CANARY_LIST" != "No canaries active" ]; then
             echo "  Daemon reported canaries found"
-
+            
             # Delete each canary
             while IFS= read -r canary; do
                 if [ -f "$canary" ]; then
@@ -926,7 +926,7 @@ if systemctl is-active --quiet korad; then
                     ((canary_count++))
                 fi
             done <<< "$CANARY_LIST"
-
+            
             echo -e "${GREEN}  Removed $canary_count canary files via daemon query${NC}"
         else
             echo "  Daemon reported no active canaries or query failed"
@@ -1012,7 +1012,7 @@ if [ -d "/var/lib/systemb" ]; then
     rm -rf /var/lib/systemb/log_archive
     rm -rf /var/lib/systemb/temp_files
     echo "    ✓ Removed system canary directories"
-
+    
     # Remove parent if empty
     if [ -z "$(ls -A /var/lib/systemb 2>/dev/null)" ]; then
         rmdir /var/lib/systemb 2>/dev/null && echo "    ✓ Removed empty /var/lib/systemb directory"
@@ -1175,9 +1175,12 @@ if [ ${#kept_items[@]} -gt 0 ]; then
     echo ""
 fi
 
-echo "${GREEN} Thank you for using KoraAV!${NC}"
-echo "${YELLOW} Note: library installation and dependencies were not uninstalled..${NC}"
-echo "${YELLOW} If you wish to uninstall the packages/dependencies, then please refer to the install.sh code starting at line 246 for what was installed.${NC}"
+echo ""
+echo -e "${GREEN}Thank you for using KoraAV!${NC}"
+echo ""
+echo -e "${YELLOW}Note: Library installation and dependencies were not uninstalled.${NC}"
+echo -e "${YELLOW}If you wish to uninstall the packages/dependencies, please refer to${NC}"
+echo -e "${YELLOW}the install.sh code starting at line 246 for what was installed.${NC}"
 UNINSTALL_SCRIPT
 
     chmod 755 "$INSTALL_DIR/uninstall.sh"
