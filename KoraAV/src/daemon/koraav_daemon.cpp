@@ -257,7 +257,7 @@ bool KoraAVDaemon::Initialize(const std::string& config_path) {
     
     // Initialize canary file system
     canary_system_ = std::make_unique<realtime::CanaryFileSystem>();
-    if (!canary_system_->Initialize(config_.canaries_per_directory)) {
+    if (!canary_system_->Initialize(config_.canaries_per_directory)) {  // 2 canaries per directory
         std::cerr << "Warning: Canary file system initialization failed" << std::endl;
         return false;
     }
@@ -274,7 +274,7 @@ bool KoraAVDaemon::Initialize(const std::string& config_path) {
     // ════════════════════════════════════════════════════════════
     // Initialize control socket (root-only access)
     // ════════════════════════════════════════════════════════════
-    control_socket_ = std::make_unique<ControlSocket>("/var/run/koraav/korad.sock");
+    control_socket_ = std::make_unique<ControlSocket>("/run/koraav/korad.sock");
     
     // Register command handlers
     control_socket_->RegisterHandler("LIST_CANARIES", [this]() {
@@ -1066,6 +1066,7 @@ void KoraAVDaemon::AnalyzeFileEvents() {
                 operation_type = "APPEND";
             }
             
+            // TODO
             // Note: DELETE and RENAME are captured by different syscalls
             // and would need separate eBPF hooks (unlink, rename syscalls)
             // For now, we detect them via WRITE attempts
@@ -1612,23 +1613,6 @@ void KoraAVDaemon::RunPeriodicAnalysis() {
             CleanupExpiredThreats();
         }
 
-        // ── Ransomware: check confirmed threats ──────────────────────────────
-        // if (ransomware_detector_) {
-        //     auto suspicious = ransomware_detector_->GetSuspiciousProcesses();
-        //     for (const auto& proc : suspicious) {
-        //         if (proc.is_confirmed_ransomware) {
-        //             std::vector<std::string> indicators;
-        //             for (const auto& file : proc.targeted_files) {
-        //                 indicators.push_back("Encrypted: " + file);
-        //             }
-        //             int score = std::min(100, 60 + proc.encryption_attempts * 10
-        //                                       + (proc.files_targeted >= 5 ? 25 : 0));
-        //             threats_detected_++;
-        //             HandleThreat(proc.pid, "Ransomware", score, indicators);
-        //         }
-        //     }
-        // }
-
         // ── InfoStealer: check accumulated scores ────────────────────────────
         if (infostealer_detector_) {
             auto suspicious_pids = infostealer_detector_->GetSuspiciousProcesses(70);
@@ -2100,8 +2084,6 @@ uint64_t KoraAVDaemon::GetProcessStartTime(uint32_t tgid) {
     iss >> starttime;
     return starttime;
 }
-
-
 
 
 
