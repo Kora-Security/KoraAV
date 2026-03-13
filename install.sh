@@ -421,6 +421,22 @@ install_files() {
     mkdir -p "$INSTALL_DIR"/{bin,lib/bpf,var/{db,logs,quarantine,run},share/doc}
     mkdir -p "$CONFIG_DIR"
     mkdir -p /var/log/koraav
+    
+    # ════════════════════════════════════════════════════════════════
+    # CRITICAL: Create socket directory (daemon runs as koraav user)
+    # /var/run is tmpfs - cleared on reboot!
+    # Use systemd-tmpfiles to recreate on boot
+    # ════════════════════════════════════════════════════════════════
+    print_info "Creating control socket directory..."
+    mkdir -p /run/koraav  # /var/run -> /run (tmpfs)
+    
+    # Create systemd-tmpfiles.d entry to recreate on boot
+    cat > /etc/tmpfiles.d/koraav_rt.conf << 'EOF'
+# KoraAV runtime directory (recreated on boot)
+d /run/koraav 0755 koraav koraav -
+EOF
+    
+    print_info "✓ Socket directory will persist across reboots (systemd-tmpfiles)"
 
     # ════════════════════════════════════════════════════════════════
     # CRITICAL: Create snapshot directory
@@ -525,6 +541,13 @@ install_files() {
     # ════════════════════════════════════════════════════════════════
     chown -R koraav:koraav /.snapshots/koraav
     chmod 700 /.snapshots/koraav  # drwx------ (only koraav)
+    
+    # ════════════════════════════════════════════════════════════════
+    # CRITICAL: Socket directory - koraav owned (daemon creates socket)
+    # Note: /run/koraav managed by systemd-tmpfiles, but set ownership now too
+    # ════════════════════════════════════════════════════════════════
+    chown -R koraav:koraav /run/koraav
+    chmod 755 /run/koraav  # drwxr-xr-x (koraav can write, others can read dir)
 
     # ════════════════════════════════════════════════════════════════
     # System canary directories - koraav owned, others can read
@@ -913,7 +936,7 @@ canary_count=0
 if systemctl is-active --quiet korad; then
     # Daemon is running - query via socket
     if command -v socat >/dev/null 2>&1; then
-        CANARY_LIST=$(echo "LIST_CANARIES" | socat - UNIX-CONNECT:/var/run/koraav/korad.sock 2>/dev/null)
+        CANARY_LIST=$(echo "LIST_CANARIES" | socat - UNIX-CONNECT:/run/koraav/korad.sock 2>/dev/null)
         
         if [ $? -eq 0 ] && [ -n "$CANARY_LIST" ] && [ "$CANARY_LIST" != "No canaries active" ]; then
             echo "  Daemon reported canaries found"
@@ -923,7 +946,7 @@ if systemctl is-active --quiet korad; then
                 if [ -f "$canary" ]; then
                     rm -f "$canary"
                     echo "    ✓ Removed: $canary"
-                    ((canary_count++))
+                    canary_count=$((canary_count + 1))
                 fi
             done <<< "$CANARY_LIST"
             
@@ -951,6 +974,12 @@ systemctl daemon-reload
 echo "Removing binaries..."
 rm -f /usr/local/bin/koraav
 rm -f /usr/local/bin/korad
+
+echo "Removing tmpfiles configuration..."
+rm -f /etc/tmpfiles.d/koraav_rt.conf
+
+echo "Removing socket directory..."
+rm -rf /run/koraav
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1018,6 +1047,9 @@ if [ -d "/var/lib/systemb" ]; then
         rmdir /var/lib/systemb 2>/dev/null && echo "    ✓ Removed empty /var/lib/systemb directory"
     fi
 fi
+
+# Ensure canary_count has a value (default to 0 if unset or empty)
+canary_count="${canary_count:-0}"
 
 if [ "$canary_count" -gt 0 ]; then
     echo ""
@@ -1147,6 +1179,9 @@ rm -rf /opt/koraav
 
 echo "Removing data directory..."
 rm -rf /var/lib/koraav 2>/dev/null || true
+
+echo "Removing socket directory..."
+rm -rf /var/run/koraav 2>/dev/null || true
 
 # Remove koraav user
 if id -u koraav >/dev/null 2>&1; then
