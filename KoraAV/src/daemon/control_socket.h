@@ -8,10 +8,10 @@
 #include <functional>
 #include <thread>
 #include <atomic>
+#include <map>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
-#include <map>
 
 namespace koraav {
 namespace daemon {
