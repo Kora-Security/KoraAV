@@ -257,7 +257,7 @@ bool KoraAVDaemon::Initialize(const std::string& config_path) {
     
     // Initialize canary file system
     canary_system_ = std::make_unique<realtime::CanaryFileSystem>();
-    if (!canary_system_->Initialize(2)) {  // 2 canaries per directory
+    if (!canary_system_->Initialize(config_.canaries_per_directory)) {
         std::cerr << "Warning: Canary file system initialization failed" << std::endl;
         return false;
     }
