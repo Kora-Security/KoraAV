@@ -269,7 +269,8 @@ install_dependencies_debian() {
         libnotify-bin \
         libsystemd-dev \
         acl \
-        socat
+        socat \
+        libdbus-1-dev
 
     print_info "Installing eBPF tools..."
     # Try to install bpftool from linux-tools
@@ -360,7 +361,8 @@ install_dependencies_arch() {
         p7zip \
         unrar \
         acl \
-        socat
+        socat \
+        dbus
 
     print_success "All dependencies installed"
 }
