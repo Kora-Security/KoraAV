@@ -269,8 +269,7 @@ install_dependencies_debian() {
         libnotify-bin \
         libsystemd-dev \
         acl \
-        socat \
-        libdbus-1-dev
+        socat
 
     print_info "Installing eBPF tools..."
     # Try to install bpftool from linux-tools
@@ -361,8 +360,7 @@ install_dependencies_arch() {
         p7zip \
         unrar \
         acl \
-        socat \
-        dbus
+        socat
 
     print_success "All dependencies installed"
 }
@@ -653,7 +651,7 @@ detect_c2 = true
 
 # Canary file system (hidden decoy files)
 enable_canary_files = true
-canaries_per_directory = 3
+canaries_per_directory = 1
 
 [thresholds]
 alert_threshold = 61
