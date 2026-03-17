@@ -1,4 +1,5 @@
 // src/common/notification_manager.h
+// Desktop Notification Manager - DBUS based
 #ifndef KORAAV_NOTIFICATION_MANAGER_H
 #define KORAAV_NOTIFICATION_MANAGER_H
 
@@ -8,62 +9,63 @@
 
 namespace koraav {
 
-/**
- * Desktop Notification Manager
- * Sends GUI notifications to user desktop
- */
-class NotificationManager {
-public:
-    NotificationManager();
-    ~NotificationManager();
-    
-    enum class Urgency {
-        LOW,
-        NORMAL,
-        CRITICAL
-    };
-    
     /**
-     * Send a threat detected notification
+     * Desktop Notification Manager
+     * Sends GUI notifications via direct DBUS connection
+     * Works even when daemon runs as non-root user
      */
-    bool SendThreatAlert(const std::string& threat_type,
-                        const std::string& process_name,
-                        uint32_t pid,
-                        int threat_score,
-                        const std::vector<std::string>& indicators);
-    
-    /**
-     * Send a quarantine notification
-     */
-    bool SendQuarantineNotification(const std::string& threat_type,
-                                   const std::string& process_name,
-                                   const std::string& quarantine_path);
-    
-    /**
-     * Send a system lockdown notification
-     */
-    bool SendLockdownNotification();
-    
-    /**
-     * Send a custom notification
-     */
-    bool SendNotification(const std::string& title,
-                         const std::string& message,
-                         Urgency urgency = Urgency::NORMAL);
+    class NotificationManager {
+    public:
+        NotificationManager();
+        ~NotificationManager();
 
-private:
-    bool initialized_;
-    
-    bool InitializeLibnotify();
-    void CleanupLibnotify();
-    std::string GetUrgencyString(Urgency urgency);
-    std::string GetThreatIcon(int score);
-    
-    // Helper functions for sending notifications as user
-    std::string GetLoggedInUser();
-    std::string GetUserDisplay(const std::string& username);
-    std::string EscapeForShell(const std::string& str);
-};
+        enum class Urgency {
+            LOW,
+            NORMAL,
+            CRITICAL
+        };
+
+        /**
+         * Send a threat detected notification
+         */
+        void SendThreatAlert(const std::string& threat_type,
+                             const std::string& process_name,
+                             uint32_t pid,
+                             int threat_score,
+                             const std::vector<std::string>& indicators);
+
+        /**
+         * Send a quarantine notification
+         */
+        void SendQuarantineNotification(const std::string& threat_type,
+                                        const std::string& process_name,
+                                        const std::string& quarantine_path);
+
+        /**
+         * Send a system lockdown notification
+         */
+        void SendLockdownNotification();
+
+        /**
+         * Send a custom notification
+         */
+        bool SendNotification(const std::string& title,
+                              const std::string& message,
+                              Urgency urgency = Urgency::NORMAL);
+
+    private:
+        bool initialized_;
+
+        // DBUS connection helpers
+        bool TestDBusConnection();
+        std::string GetUserDBusAddress();
+        std::string GetLoggedInUser();
+
+        // Send notification via DBUS
+        bool SendDBusNotification(const std::string& title,
+                                  const std::string& message,
+                                  Urgency urgency);
+    };
 
 } // namespace koraav
 
