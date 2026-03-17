@@ -111,8 +111,30 @@ bool CanaryFileSystem::CreateCanaryFile(const std::string& directory, const std:
         return false;
     }
     
-    // Set normal permissions (don't make it obvious)
-    if (chmod(filepath.c_str(), 0644) != 0) {
+    // ═══════════════════════════════════════════════════════════════
+    // CRITICAL: Change ownership to match the directory owner
+    // ═══════════════════════════════════════════════════════════════
+    // Get directory ownership
+    struct stat dir_stat;
+    if (stat(directory.c_str(), &dir_stat) == 0) {
+        // Change canary file to match directory owner
+        // This way the user can write to their own canaries!
+        if (chown(filepath.c_str(), dir_stat.st_uid, dir_stat.st_gid) != 0) {
+            std::cerr << "⚠️  Warning: Could not change canary ownership: " << filepath << std::endl;
+            // Don't fail - file is still usable
+        }
+    }
+    
+    // ═══════════════════════════════════════════════════════════════
+    // CRITICAL: Make canary files WORLD-WRITABLE (0666)
+    // ═══════════════════════════════════════════════════════════════
+    // Ransomware running as ANY user must be able to write to these files
+    // Otherwise they won't trigger detection!
+    // 
+    // 0666 = -rw-rw-rw- (everyone can read and write)
+    // This looks like a normal user document file
+    // ═══════════════════════════════════════════════════════════════
+    if (chmod(filepath.c_str(), 0666) != 0) {
         unlink(filepath.c_str());
         return false;
     }
