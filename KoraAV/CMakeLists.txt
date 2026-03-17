@@ -36,13 +36,13 @@ else()
     message(FATAL_ERROR "libsystemd not found - install libsystemd-dev for notifications")
 endif()
 
-# Find dbus (for desktop notifications)
-pkg_check_modules(DBUS REQUIRED dbus-1)
+# Find dbus (optional - for runtime notifications via gdbus)
+# Not required for compilation, only needed at runtime
+pkg_check_modules(DBUS dbus-1)
 if(DBUS_FOUND)
-    message(STATUS "dbus-1 found: ${DBUS_INCLUDE_DIRS}")
-    include_directories(${DBUS_INCLUDE_DIRS})
+    message(STATUS "dbus-1 found: ${DBUS_INCLUDE_DIRS} (runtime tool available)")
 else()
-    message(FATAL_ERROR "dbus-1 not found - install libdbus-1-dev (Debian/Ubuntu) or dbus (Arch)")
+    message(STATUS "dbus-1 not found (notifications will use notify-send if available)")
 endif()
 
 
@@ -75,12 +75,8 @@ add_library(koraav_common STATIC
     src/common/yara_manager.cpp          # Centralized YARA rules manager
 )
 
-# Add DBUS include directories to the target
-target_include_directories(koraav_common PRIVATE ${DBUS_INCLUDE_DIRS})
-
 target_link_libraries(koraav_common
     ${CAP_LIBRARY}
-    ${DBUS_LIBRARIES}
 )
 
 # Link YARA to common library (since yara_manager lives here now)
