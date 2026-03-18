@@ -220,7 +220,7 @@ bool NotificationManager::SendDBusNotification(const std::string& title,
     
     // Fallback: try notify-send
     std::ostringstream notify_cmd;
-    notify_cmd << switch_user_cmd << " "
+    notify_cmd << " "
                << "env DBUS_SESSION_BUS_ADDRESS=" << dbus_address << " "
                << "notify-send -a KoraAV -u ";
     
