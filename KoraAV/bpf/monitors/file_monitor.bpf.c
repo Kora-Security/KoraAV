@@ -81,6 +81,7 @@ static __always_inline bool is_sensitive_path(const char *path) {
         contains(path, "/google-chrome/", 256) ||
         contains(path, "/Documents/", 256) ||
         contains(path, "/Downloads/", 256) ||
+        contains(path, "/Desktop/", 256) ||
         contains(path, "/.password-store/", 256) ||
         contains(path, "/etc/passwd", 256) ||
         contains(path, "/etc/shadow", 256) ||
