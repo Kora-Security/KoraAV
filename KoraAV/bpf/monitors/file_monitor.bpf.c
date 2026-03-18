@@ -55,7 +55,8 @@ static __always_inline bool starts_with(const char *str, const char *prefix, int
 
 // Helper: Check if path contains substring (simple implementation)
 static __always_inline bool contains(const char *str, const char *substr, int max_len) {
-    for (int i = 0; i < max_len && str[i] != '\0'; i++) {
+    // for (int i = 0; i < max_len && str[i] != '\0'; i++) {
+    for (int j = 0; j < substr_len && j < 32; j++) {
         bool match = true;
         for (int j = 0; substr[j] != '\0' && (i + j) < max_len; j++) {
             if (str[i + j] != substr[j]) {
