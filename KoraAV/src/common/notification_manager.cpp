@@ -194,7 +194,7 @@ bool NotificationManager::SendDBusNotification(const std::string& title,
               << "\"" << escaped_title << "\" "
               << "\"" << escaped_message << "\" "
               << "[] "
-              << "{\\\"urgency\\\":<byte " << urgency_str << ">} "
+              << "{\\\"urgency\\\": <byte " << urgency_str << ">} "
               << "10000 2>&1";
     
     std::cout << "[NOTIFICATION DEBUG] Trying gdbus..." << std::endl;
