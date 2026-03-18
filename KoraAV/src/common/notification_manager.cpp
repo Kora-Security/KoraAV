@@ -154,20 +154,18 @@ bool NotificationManager::SendDBusNotification(const std::string& title,
         return false;
     }
     
-    // Get user's UID for DBUS address
+    // Get user's UID
     struct passwd* pw = getpwnam(username.c_str());
     if (!pw) {
         std::cout << "\n[NOTIFICATION FALLBACK] " << title << "\n" << message << "\n" << std::endl;
         return false;
     }
     
-    std::string dbus_address = "unix:path=/run/user/" + std::to_string(pw->pw_uid) + "/bus";
-    
     // Escape strings for shell
     std::string escaped_title = EscapeForShell(title);
     std::string escaped_message = EscapeForShell(message);
     
-    // Build urgency parameter
+    // Map urgency
     std::string urgency_str;
     switch (urgency) {
         case Urgency::LOW:
@@ -181,23 +179,29 @@ bool NotificationManager::SendDBusNotification(const std::string& title,
             break;
     }
     
-    // Try gdbus first (more reliable)
-    // NO runuser/sudo needed - just set DBUS_SESSION_BUS_ADDRESS!
-    std::ostringstream gdbus_cmd;
+    // ═══════════════════════════════════════════════════════════
+    // SOLUTION: Use systemd-run to run in user's session context
+    // This is the ONLY method that reliably works from system service
+    // ═══════════════════════════════════════════════════════════
     
-    gdbus_cmd << "DBUS_SESSION_BUS_ADDRESS=" << dbus_address << " "
+    std::ostringstream gdbus_cmd;
+    gdbus_cmd << "systemd-run "
+              << "--user "
+              << "--machine=" << username << "@.host "
+              << "--quiet --collect -- "
               << "gdbus call --session "
               << "--dest org.freedesktop.Notifications "
               << "--object-path /org/freedesktop/Notifications "
               << "--method org.freedesktop.Notifications.Notify "
-              << "\"KoraAV\" 0 \"security-high\" "
-              << "\"" << escaped_title << "\" "
-              << "\"" << escaped_message << "\" "
-              << "[] "
-              << "{\\\"urgency\\\": <byte " << urgency_str << ">} "
-              << "10000 2>&1";
+              << "KoraAV 0 security-high "
+              << "'" << escaped_title << "' "
+              << "'" << escaped_message << "' "
+              << "'[]' "
+              << "'{\"urgency\": <byte " << urgency_str << ">}' "
+              << "10000 "
+              << "2>&1";
     
-    std::cout << "[NOTIFICATION DEBUG] Trying gdbus..." << std::endl;
+    std::cout << "[NOTIFICATION] Sending to user " << username << " (UID " << pw->pw_uid << ")" << std::endl;
     
     FILE* pipe = popen(gdbus_cmd.str().c_str(), "r");
     if (pipe) {
@@ -208,8 +212,8 @@ bool NotificationManager::SendDBusNotification(const std::string& title,
         }
         int result = pclose(pipe);
         
-        if (result == 0 && output.find("uint32") != std::string::npos) {
-            std::cout << "[NOTIFICATION DEBUG] Desktop notification sent via gdbus" << std::endl;
+        if (result == 0) {
+            std::cout << "✅ Desktop notification sent successfully" << std::endl;
             return true;
         }
         
@@ -218,11 +222,15 @@ bool NotificationManager::SendDBusNotification(const std::string& title,
         }
     }
     
-    // Fallback: try notify-send
+    // Fallback: try notify-send via systemd-run
+    std::cout << "[NOTIFICATION DEBUG] gdbus failed, trying notify-send..." << std::endl;
+    
     std::ostringstream notify_cmd;
-    notify_cmd << " "
-               << "env DBUS_SESSION_BUS_ADDRESS=" << dbus_address << " "
-               << "notify-send -a KoraAV -u ";
+    notify_cmd << "systemd-run "
+               << "--user "
+               << "--machine=" << username << "@.host "
+               << "--quiet --collect -- "
+               << "notify-send -u ";
     
     switch (urgency) {
         case Urgency::LOW:
@@ -236,11 +244,10 @@ bool NotificationManager::SendDBusNotification(const std::string& title,
             break;
     }
     
-    notify_cmd << "\"" << escaped_title << "\" "
-               << "\"" << escaped_message << "\" "
+    notify_cmd << "-a KoraAV "
+               << "'" << escaped_title << "' "
+               << "'" << escaped_message << "' "
                << "2>&1";
-    
-    std::cout << "[NOTIFICATION DEBUG] Trying notify-send..." << std::endl;
     
     pipe = popen(notify_cmd.str().c_str(), "r");
     if (pipe) {
@@ -252,7 +259,7 @@ bool NotificationManager::SendDBusNotification(const std::string& title,
         int result = pclose(pipe);
         
         if (result == 0) {
-            std::cout << "[NOTIFICATION DEBUG] Desktop notification sent via notify-send" << std::endl;
+            std::cout << "✅ Desktop notification sent via notify-send" << std::endl;
             return true;
         }
         
@@ -262,6 +269,9 @@ bool NotificationManager::SendDBusNotification(const std::string& title,
     }
     
     // Both failed - console fallback
+    std::cout << "\n[NOTIFICATION FALLBACK] " << title << "\n" << message << "\n" << std::endl;
+    return false;
+}
     std::cout << "\n[NOTIFICATION FALLBACK] " << title << "\n" << message << "\n" << std::endl;
     return false;
 }
