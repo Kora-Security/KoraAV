@@ -73,23 +73,66 @@ static __always_inline bool is_sensitive_path(const char *path) {
     // Check for sensitive patterns ANYWHERE in the path
     // This works because if path is /home/you/.ssh/id_rsa,
     // it will contain "/.ssh/" which is what we want to detect
-    
+
+    // ═══════════════════════════════════════════════════════════
+    // CATEGORY 1: User Home Directories (Canaries + Behavioral)
+    // ═══════════════════════════════════════════════════════════
+    if (contains(path, "/Documents/", 256) ||
+        contains(path, "/Downloads/", 256) ||
+        contains(path, "/Desktop/", 256) ||
+        contains(path, "/Pictures/", 256) ||
+        contains(path, "/Videos/", 256) ||
+        contains(path, "/Music/", 256) ||
+        contains(path, "/.config/", 256) ||
+        contains(path, "/.local/share/", 256)) {
+        return true;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // CATEGORY 2: Credentials & Configs (Infostealer Detection)
+    // ═══════════════════════════════════════════════════════════
     if (contains(path, "/.ssh/", 256) ||
         contains(path, "/.gnupg/", 256) ||
         contains(path, "/.aws/", 256) ||
         contains(path, "/.mozilla/", 256) ||
         contains(path, "/google-chrome/", 256) ||
-        contains(path, "/Documents/", 256) ||
-        contains(path, "/Downloads/", 256) ||
-        contains(path, "/Desktop/", 256) ||
-        contains(path, "/.password-store/", 256) ||
-        contains(path, "/etc/passwd", 256) ||
+        contains(path, "/chromium/", 256) ||
+        contains(path, "/.password-store/", 256)) {
+        return true;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // CATEGORY 3: System Canary Directories (Ransomware Traps)
+    // ═══════════════════════════════════════════════════════════
+    if (contains(path, "/var/lib/systemb/", 256)) {
+        return true;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // CATEGORY 4: World-Writable Dirs (Malware Staging Areas)
+    // ═══════════════════════════════════════════════════════════
+    if (contains(path, "/tmp/", 256) ||
+        contains(path, "/var/tmp/", 256)) {
+        return true;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // CATEGORY 5: System Security Files (Privilege Escalation)
+    // ═══════════════════════════════════════════════════════════
+    if (contains(path, "/etc/passwd", 256) ||
         contains(path, "/etc/shadow", 256) ||
         contains(path, "/etc/sudoers", 256) ||
         contains(path, "/etc/ssh/", 256)) {
         return true;
     }
-    
+
+    // ═══════════════════════════════════════════════════════════
+    // CATEGORY 6: System Logs & Spool (Log Tampering Detection)
+    // ═══════════════════════════════════════════════════════════
+    if (contains(path, "/var/log/", 256) ||
+        contains(path, "/var/spool/", 256)) {
+        return true;
+    }
     return false;
 }
 
