@@ -421,7 +421,7 @@ install_files() {
     mkdir -p "$INSTALL_DIR"/{bin,lib/bpf,var/{db,logs,quarantine,run},share/doc}
     mkdir -p "$CONFIG_DIR"
     mkdir -p /var/log/koraav
-    
+
     # ════════════════════════════════════════════════════════════════
     # CRITICAL: Create socket directory (daemon runs as koraav user)
     # /var/run is tmpfs - cleared on reboot!
@@ -429,13 +429,13 @@ install_files() {
     # ════════════════════════════════════════════════════════════════
     print_info "Creating control socket directory..."
     mkdir -p /run/koraav  # /var/run -> /run (tmpfs)
-    
+
     # Create systemd-tmpfiles.d entry to recreate on boot
     cat > /etc/tmpfiles.d/koraav_rt.conf << 'EOF'
 # KoraAV runtime directory (recreated on boot)
 d /run/koraav 0755 koraav koraav -
 EOF
-    
+
     print_info "✓ Socket directory will persist across reboots (systemd-tmpfiles)"
 
     # ════════════════════════════════════════════════════════════════
@@ -541,7 +541,7 @@ EOF
     # ════════════════════════════════════════════════════════════════
     chown -R koraav:koraav /.snapshots/koraav
     chmod 700 /.snapshots/koraav  # drwx------ (only koraav)
-    
+
     # ════════════════════════════════════════════════════════════════
     # CRITICAL: Socket directory - koraav owned (daemon creates socket)
     # Note: /run/koraav managed by systemd-tmpfiles, but set ownership now too
@@ -611,6 +611,13 @@ EOF
     print_info "Creating symlinks..."
     ln -sf "$INSTALL_DIR/bin/koraav" "/usr/local/bin/koraav"
     ln -sf "$INSTALL_DIR/bin/korad" "/usr/local/bin/korad"
+
+    # Install notification helper if it exists
+    if [ -f "$INSTALL_DIR/bin/koraav-notify-helper" ]; then
+        cp "$INSTALL_DIR/bin/koraav-notify-helper" "/usr/local/bin/koraav-notify-helper"
+        chmod 755 "/usr/local/bin/koraav-notify-helper"
+        print_success "Notification helper installed"
+    fi
 
     print_success "Files installed to $INSTALL_DIR"
 }
@@ -891,6 +898,69 @@ enable_service() {
     print_success "Service enabled (will start on boot)"
 }
 
+setup_notification_helper() {
+    print_step "Setting Up Notification Helper"
+
+    # Check if helper binary exists
+    if [ ! -f "/usr/local/bin/koraav-notify-helper" ]; then
+        print_warning "Notification helper not found - notifications may not work"
+        print_info "This is optional - the daemon will still work without it. You will need to just refer to the journal."
+        return
+    fi
+
+    # Get the real user (who called sudo)
+    REAL_USER="${SUDO_USER:-$USER}"
+    if [ "$REAL_USER" = "root" ]; then
+        print_warning "Cannot detect logged-in user - skipping notification helper setup"
+        print_info "You can manually setup later by running as your user:"
+        print_info "  systemctl --user enable --now koraav-notify-helper.service"
+        return
+    fi
+
+    REAL_HOME=$(eval echo ~$REAL_USER)
+    USER_SYSTEMD_DIR="$REAL_HOME/.config/systemd/user"
+
+    print_info "Setting up notification helper for user: $REAL_USER"
+
+    # Create user systemd directory
+    mkdir -p "$USER_SYSTEMD_DIR"
+
+    # Create user service file
+    cat > "$USER_SYSTEMD_DIR/koraav-notify-helper.service" << 'EOF'
+[Unit]
+Description=KoraAV Notification Helper
+Documentation=https://github.com/kora-security/koraav
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/koraav-notify-helper
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+
+    # Set ownership
+    chown -R $REAL_USER:$(id -gn $REAL_USER) "$USER_SYSTEMD_DIR"
+
+    # Enable and start for user
+    su - $REAL_USER -c "systemctl --user daemon-reload" 2>/dev/null || true
+    su - $REAL_USER -c "systemctl --user enable koraav-notify-helper.service" 2>/dev/null || true
+    su - $REAL_USER -c "systemctl --user start koraav-notify-helper.service" 2>/dev/null || true
+
+    # Check if it started
+    sleep 1
+    if su - $REAL_USER -c "systemctl --user is-active --quiet koraav-notify-helper" 2>/dev/null; then
+        print_success "Notification helper started successfully"
+    else
+        print_warning "Notification helper installed but not running (will start on next login)"
+        print_info "To start now: systemctl --user start koraav-notify-helper"
+    fi
+}
+
+
 create_uninstaller() {
     print_step "Creating Uninstaller"
 
@@ -937,10 +1007,10 @@ if systemctl is-active --quiet korad; then
     # Daemon is running - query via socket
     if command -v socat >/dev/null 2>&1; then
         CANARY_LIST=$(echo "LIST_CANARIES" | socat - UNIX-CONNECT:/run/koraav/korad.sock 2>/dev/null)
-        
+
         if [ $? -eq 0 ] && [ -n "$CANARY_LIST" ] && [ "$CANARY_LIST" != "No canaries active" ]; then
             echo "  Daemon reported canaries found"
-            
+
             # Delete each canary
             while IFS= read -r canary; do
                 if [ -f "$canary" ]; then
@@ -949,7 +1019,7 @@ if systemctl is-active --quiet korad; then
                     canary_count=$((canary_count + 1))
                 fi
             done <<< "$CANARY_LIST"
-            
+
             echo -e "${GREEN}  Removed $canary_count canary files via daemon query${NC}"
         else
             echo "  Daemon reported no active canaries or query failed"
@@ -967,6 +1037,19 @@ echo "Stopping KoraAV service..."
 systemctl stop korad.service 2>/dev/null || true
 systemctl disable korad.service 2>/dev/null || true
 
+echo "Stopping notification helper (if running)..."
+# Try to stop for all users
+for user_home in /home/*; do
+    if [ -d "$user_home" ]; then
+        username=$(basename "$user_home")
+        if [ "$username" != "*" ]; then
+            su - $username -c "systemctl --user stop koraav-notify-helper.service 2>/dev/null" || true
+            su - $username -c "systemctl --user disable koraav-notify-helper.service 2>/dev/null" || true
+            rm -f "$user_home/.config/systemd/user/koraav-notify-helper.service" 2>/dev/null || true
+        fi
+    fi
+done
+
 echo "Removing systemd service..."
 rm -f /etc/systemd/system/korad.service
 systemctl daemon-reload
@@ -974,6 +1057,7 @@ systemctl daemon-reload
 echo "Removing binaries..."
 rm -f /usr/local/bin/koraav
 rm -f /usr/local/bin/korad
+rm -f /usr/local/bin/koraav-notify-helper
 
 echo "Removing tmpfiles configuration..."
 rm -f /etc/tmpfiles.d/koraav_rt.conf
@@ -1041,7 +1125,7 @@ if [ -d "/var/lib/systemb" ]; then
     rm -rf /var/lib/systemb/log_archive
     rm -rf /var/lib/systemb/temp_files
     echo "    ✓ Removed system canary directories"
-    
+
     # Remove parent if empty
     if [ -z "$(ls -A /var/lib/systemb 2>/dev/null)" ]; then
         rmdir /var/lib/systemb 2>/dev/null && echo "    ✓ Removed empty /var/lib/systemb directory"
@@ -1285,6 +1369,7 @@ main() {
     create_process_whitelist
     create_systemd_service
     enable_service
+    setup_notification_helper
     create_uninstaller
 
     cleanup
