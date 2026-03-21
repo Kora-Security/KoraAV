@@ -194,10 +194,31 @@ NotificationManager::SendDBusNotification(const std::string& title,
 {
   // ═══════════════════════════════════════════════════════════
   // ENTERPRISE SOLUTION: Socket-based notification
-  // System daemon → User helper → Desktop notification
+  // Socket location: /run/user/<UID>/koraav-notifications.sock
+  // Installer adds koraav to user's group for secure access
   // ═══════════════════════════════════════════════════════════
   
-  const char* SOCKET_PATH = "/var/run/koraav/notifications.sock";
+  // Get logged-in user to find their runtime directory
+  std::string username = GetLoggedInUser();
+  if (username.empty()) {
+    std::cout << "[NOTIFICATION] Could not detect logged-in user" << std::endl;
+    std::cout << "[NOTIFICATION FALLBACK] " << title << "\n" << message << std::endl;
+    return false;
+  }
+  
+  struct passwd* pw = getpwnam(username.c_str());
+  if (!pw) {
+    std::cout << "[NOTIFICATION] Could not get user info for: " << username << std::endl;
+    std::cout << "[NOTIFICATION FALLBACK] " << title << "\n" << message << std::endl;
+    return false;
+  }
+  
+  // Construct socket path in user's runtime directory
+  std::string socket_path = "/run/user/" + std::to_string(pw->pw_uid) + "/koraav-notifications.sock";
+  
+  std::cout << "[NOTIFICATION] Attempting to send notification to user: " << username 
+            << " (UID " << pw->pw_uid << ")" << std::endl;
+  std::cout << "[NOTIFICATION] Socket path: " << socket_path << std::endl;
   
   // Map urgency
   std::string urgency_str;
@@ -233,11 +254,12 @@ NotificationManager::SendDBusNotification(const std::string& title,
   struct sockaddr_un addr;
   memset(&addr, 0, sizeof(addr));
   addr.sun_family = AF_UNIX;
-  strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
+  strncpy(addr.sun_path, socket_path.c_str(), sizeof(addr.sun_path) - 1);
   
   if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
     close(sock);
     std::cout << "[NOTIFICATION] Helper not running - notifications unavailable" << std::endl;
+    std::cout << "  Expected socket at: " << socket_path << std::endl;
     std::cout << "[NOTIFICATION FALLBACK] " << title << "\n" << message << std::endl;
     return false;
   }
