@@ -919,8 +919,34 @@ setup_notification_helper() {
 
     REAL_HOME=$(eval echo ~$REAL_USER)
     USER_SYSTEMD_DIR="$REAL_HOME/.config/systemd/user"
+    USER_UID=$(id -u $REAL_USER)
+    USER_RUNTIME_DIR="/run/user/$USER_UID"
 
     print_info "Setting up notification helper for user: $REAL_USER"
+
+    # ═══════════════════════════════════════════════════════════
+    # SECURITY: Add koraav to user's group for runtime dir access
+    # This allows daemon to connect to socket in /run/user/<UID>/
+    # without making socket world-accessible in /tmp
+    # ═══════════════════════════════════════════════════════════
+    print_info "Configuring secure socket access..."
+
+    # Get user's primary group
+    USER_GROUP=$(id -gn $REAL_USER)
+
+    # Add koraav to user's group
+    if ! groups koraav | grep -q "\b$USER_GROUP\b"; then
+        usermod -aG $USER_GROUP koraav
+        print_success "Added koraav to group: $USER_GROUP"
+    else
+        print_info "koraav already in group: $USER_GROUP"
+    fi
+
+    # Ensure runtime directory is group-accessible
+    if [ -d "$USER_RUNTIME_DIR" ]; then
+        chmod 750 "$USER_RUNTIME_DIR"  # Owner + group can access
+        print_success "Runtime directory permissions configured"
+    fi
 
     # Create user systemd directory
     mkdir -p "$USER_SYSTEMD_DIR"
@@ -954,6 +980,7 @@ EOF
     sleep 1
     if su - $REAL_USER -c "systemctl --user is-active --quiet koraav-notify-helper" 2>/dev/null; then
         print_success "Notification helper started successfully"
+        print_info "Socket: $USER_RUNTIME_DIR/koraav-notifications.sock"
     else
         print_warning "Notification helper installed but not running (will start on next login)"
         print_info "To start now: systemctl --user start koraav-notify-helper"
