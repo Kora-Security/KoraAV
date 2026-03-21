@@ -199,8 +199,17 @@ add_custom_target(bpf_programs ALL
 # Make binaries depend on eBPF programs
 add_dependencies(korad bpf_programs)
 
+# ═══════════════════════════════════════════════════════════
+# Notification Helper (User-space daemon)
+# ═══════════════════════════════════════════════════════════
+add_executable(koraav-notify-helper
+    src/notification-helper/notification_helper_daemon.cpp
+)
+target_compile_features(koraav-notify-helper PRIVATE cxx_std_17)
+
+
 # Install targets
-install(TARGETS koraav korad
+install(TARGETS koraav korad koraav-notify-helper
     RUNTIME DESTINATION bin
 )
 

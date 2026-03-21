@@ -61,8 +61,9 @@ private:
     std::string GetUserDBusAddress();
     std::string GetLoggedInUser();
     std::string EscapeForShell(const std::string& str);
+    std::string EscapeJSON(const std::string& str);
     
-    // Send notification via gdbus/notify-send
+    // Send notification via socket to user-space helper
     bool SendDBusNotification(const std::string& title,
                              const std::string& message,
                              Urgency urgency);

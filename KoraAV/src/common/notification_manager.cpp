@@ -1,6 +1,6 @@
 // src/common/notification_manager.cpp
-// Desktop Notification Manager - Works across all desktop environments
-// Uses gdbus/dbus-send executed as the logged-in user
+// Desktop Notification Manager - Socket-based notification helper
+// System daemon sends notifications via Unix socket to user-space helper
 
 #include "notification_manager.h"
 #include <cstring>
@@ -9,6 +9,8 @@
 #include <pwd.h>
 #include <sstream>
 #include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 namespace koraav {
@@ -168,131 +170,102 @@ NotificationManager::EscapeForShell(const std::string& str)
   return escaped;
 }
 
+std::string
+NotificationManager::EscapeJSON(const std::string& str)
+{
+  std::string escaped;
+  for (char c : str) {
+    switch (c) {
+      case '"':  escaped += "\\\""; break;
+      case '\\': escaped += "\\\\"; break;
+      case '\n': escaped += "\\n"; break;
+      case '\r': escaped += "\\r"; break;
+      case '\t': escaped += "\\t"; break;
+      default:   escaped += c; break;
+    }
+  }
+  return escaped;
+}
+
 bool
 NotificationManager::SendDBusNotification(const std::string& title,
                                           const std::string& message,
                                           Urgency urgency)
 {
-  // Get logged-in user
-  std::string username = GetLoggedInUser();
-  if (username.empty()) {
-    std::cout << "\n[NOTIFICATION FALLBACK] " << title << "\n"
-              << message << "\n"
-              << std::endl;
-    return false;
-  }
-
-  // Get user's UID
-  struct passwd* pw = getpwnam(username.c_str());
-  if (!pw) {
-    std::cout << "\n[NOTIFICATION FALLBACK] " << title << "\n"
-              << message << "\n"
-              << std::endl;
-    return false;
-  }
-
-  // Escape strings for shell
-  std::string escaped_title = EscapeForShell(title);
-  std::string escaped_message = EscapeForShell(message);
-
+  // ═══════════════════════════════════════════════════════════
+  // ENTERPRISE SOLUTION: Socket-based notification
+  // System daemon → User helper → Desktop notification
+  // ═══════════════════════════════════════════════════════════
+  
+  const char* SOCKET_PATH = "/var/run/koraav/notifications.sock";
+  
   // Map urgency
   std::string urgency_str;
   switch (urgency) {
     case Urgency::LOW:
-      urgency_str = "0";
+      urgency_str = "low";
       break;
     case Urgency::CRITICAL:
-      urgency_str = "2";
+      urgency_str = "critical";
       break;
     default:
-      urgency_str = "1";
+      urgency_str = "normal";
       break;
   }
-
-  // ═══════════════════════════════════════════════════════════
-  // SOLUTION: Use systemd-run to run in user's session context
-  // This is the ONLY method that reliably works from system service
-  // ═══════════════════════════════════════════════════════════
-
-  std::ostringstream gdbus_cmd;
-  gdbus_cmd << "systemd-run " << "--user " << "--machine=" << username
-            << "@.host " << "--quiet --collect -- " << "gdbus call --session "
-            << "--dest org.freedesktop.Notifications "
-            << "--object-path /org/freedesktop/Notifications "
-            << "--method org.freedesktop.Notifications.Notify "
-            << "KoraAV 0 security-high " << "'" << escaped_title << "' " << "'"
-            << escaped_message << "' " << "'[]' " << "'{\"urgency\": <byte "
-            << urgency_str << ">}' " << "10000 " << "2>&1";
-
-  std::cout << "[NOTIFICATION] Sending to user " << username << " (UID "
-            << pw->pw_uid << ")" << std::endl;
-
-  FILE* pipe = popen(gdbus_cmd.str().c_str(), "r");
-  if (pipe) {
-    char buffer[256];
-    std::string output;
-    while (fgets(buffer, sizeof(buffer), pipe)) {
-      output += buffer;
-    }
-    int result = pclose(pipe);
-
-    if (result == 0) {
-      std::cout << "✅ Desktop notification sent successfully" << std::endl;
+  
+  // Build JSON request
+  std::ostringstream json;
+  json << "{"
+       << "\"title\":\"" << EscapeJSON(title) << "\","
+       << "\"message\":\"" << EscapeJSON(message) << "\","
+       << "\"urgency\":\"" << urgency_str << "\""
+       << "}";
+  
+  std::string request = json.str();
+  
+  // Connect to helper socket
+  int sock = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (sock < 0) {
+    std::cout << "[NOTIFICATION FALLBACK] " << title << "\n" << message << std::endl;
+    return false;
+  }
+  
+  struct sockaddr_un addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.sun_family = AF_UNIX;
+  strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
+  
+  if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+    close(sock);
+    std::cout << "[NOTIFICATION] Helper not running - notifications unavailable" << std::endl;
+    std::cout << "[NOTIFICATION FALLBACK] " << title << "\n" << message << std::endl;
+    return false;
+  }
+  
+  // Send request
+  ssize_t sent = send(sock, request.c_str(), request.length(), 0);
+  if (sent < 0) {
+    close(sock);
+    std::cout << "[NOTIFICATION FALLBACK] " << title << "\n" << message << std::endl;
+    return false;
+  }
+  
+  // Receive response
+  char buffer[1024];
+  ssize_t received = recv(sock, buffer, sizeof(buffer) - 1, 0);
+  close(sock);
+  
+  if (received > 0) {
+    buffer[received] = '\0';
+    std::string response(buffer);
+    
+    if (response.find("\"success\":true") != std::string::npos) {
+      std::cout << "✅ Desktop notification sent" << std::endl;
       return true;
     }
-
-    if (!output.empty()) {
-      std::cout << "[NOTIFICATION DEBUG] gdbus output: " << output << std::endl;
-    }
   }
-
-  // Fallback: try notify-send via systemd-run
-  std::cout << "[NOTIFICATION DEBUG] gdbus failed, trying notify-send..."
-            << std::endl;
-
-  std::ostringstream notify_cmd;
-  notify_cmd << "systemd-run " << "--user " << "--machine=" << username
-             << "@.host " << "--quiet --collect -- " << "notify-send -u ";
-
-  switch (urgency) {
-    case Urgency::LOW:
-      notify_cmd << "low ";
-      break;
-    case Urgency::CRITICAL:
-      notify_cmd << "critical ";
-      break;
-    default:
-      notify_cmd << "normal ";
-      break;
-  }
-
-  notify_cmd << "-a KoraAV " << "'" << escaped_title << "' " << "'"
-             << escaped_message << "' " << "2>&1";
-
-  pipe = popen(notify_cmd.str().c_str(), "r");
-  if (pipe) {
-    char buffer[256];
-    std::string output;
-    while (fgets(buffer, sizeof(buffer), pipe)) {
-      output += buffer;
-    }
-    int result = pclose(pipe);
-
-    if (result == 0) {
-      std::cout << "✅ Desktop notification sent via notify-send" << std::endl;
-      return true;
-    }
-
-    if (!output.empty()) {
-      std::cout << "[NOTIFICATION DEBUG] notify-send output: " << output
-                << std::endl;
-    }
-  }
-
-  // Both failed - console fallback
-  std::cout << "\n[NOTIFICATION FALLBACK] " << title << "\n"
-            << message << "\n"
-            << std::endl;
+  
+  std::cout << "[NOTIFICATION FALLBACK] " << title << "\n" << message << std::endl;
   return false;
 }
 
