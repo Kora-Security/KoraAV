@@ -65,10 +65,38 @@ public:
     bool initialize() {
         // Create socket directory if needed
         std::string socket_dir = socket_path_.substr(0, socket_path_.find_last_of('/'));
-        mkdir(socket_dir.c_str(), 0755);
+
+        std::cout << "Creating socket directory: " << socket_dir << std::endl;
+
+        // Try to create directory (will fail if exists, that's OK)
+        if (mkdir(socket_dir.c_str(), 0755) < 0) {
+            if (errno != EEXIST) {
+                std::cerr << "Warning: Could not create socket directory: " << strerror(errno) << std::endl;
+                std::cerr << "Checking if directory exists..." << std::endl;
+
+                // Check if directory actually exists
+                struct stat st;
+                if (stat(socket_dir.c_str(), &st) != 0) {
+                    std::cerr << "ERROR: Socket directory does not exist and cannot be created!" << std::endl;
+                    std::cerr << "Please run as root or ensure " << socket_dir << " exists" << std::endl;
+                    return false;
+                }
+
+                if (!S_ISDIR(st.st_mode)) {
+                    std::cerr << "ERROR: " << socket_dir << " exists but is not a directory!" << std::endl;
+                    return false;
+                }
+
+                std::cout << "Directory already exists, continuing..." << std::endl;
+            }
+        } else {
+            std::cout << "✓ Created socket directory" << std::endl;
+        }
 
         // Remove old socket if exists
         unlink(socket_path_.c_str());
+
+        std::cout << "Creating Unix socket at: " << socket_path_ << std::endl;
 
         // Create Unix socket
         sock_fd_ = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -235,17 +263,27 @@ public:
 NotificationHelper* NotificationHelper::instance_ = nullptr;
 
 int main() {
-    const char* SOCKET_PATH = "/var/run/koraav/notifications.sock";
+    // Use XDG_RUNTIME_DIR if available, otherwise fallback to /tmp
+    // This ensures the user can write to the socket location
+    const char* runtime_dir = getenv("XDG_RUNTIME_DIR");
+    std::string socket_path;
+
+    if (runtime_dir) {
+        socket_path = std::string(runtime_dir) + "/koraav-notifications.sock";
+    } else {
+        socket_path = "/tmp/koraav-notifications.sock";
+    }
 
     // Setup signal handlers
     signal(SIGINT, NotificationHelper::signalHandler);
     signal(SIGTERM, NotificationHelper::signalHandler);
 
     // Create and run helper
-    NotificationHelper helper(SOCKET_PATH);
+    NotificationHelper helper(socket_path);
 
     if (!helper.initialize()) {
         std::cerr << "Failed to initialize notification helper" << std::endl;
+        std::cerr << "Socket path: " << socket_path << std::endl;
         return 1;
     }
 
