@@ -1107,11 +1107,11 @@ void KoraAVDaemon::AnalyzeFileEvents() {
                 // Alert
                 if (notification_manager_) {
                     notification_manager_->SendThreatAlert(
-                        "Ransomware (Canary Triggered)",
+                        "Ransomware Detected",
                         proc_name,
                         evt.tgid,
                         100,  // Max score
-                        {"Hidden canary file modified (" + operation_type + ") - ransomware detected instantly"}
+                        {"Canary file triggered (" + operation_type + ")", "Process terminated", "File quarantined"}
                     );
                 }
                 
@@ -1654,7 +1654,7 @@ bool KoraAVDaemon::ShouldIgnoreProcess(uint32_t tgid, const std::string& exe_pat
     
     if (exe_path.find("/opt/koraav/") == 0 ||
         exe_path == "/usr/bin/koraav" ||
-        exe_path == "/usr/bin/koraavm" ||
+        exe_path == "/usr/bin/korad" ||
         exe_path.find("koraav") != std::string::npos) {
         return true;  // Never scan/kill ourselves
     }
