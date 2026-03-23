@@ -47,13 +47,13 @@ NotificationManager::SendThreatAlert(const std::string& threat_type,
   title << "🚨 " << threat_type << " Detected!";
 
   std::ostringstream message;
-  message << "Process: " << process_name << " (PID " << pid << ")\\n";
-  message << "Threat Score: " << threat_score << "/100\\n";
+  message << "Process: " << process_name << " (PID " << pid << ")\n";
+  message << "Threat Score: " << threat_score << "/100\n";
 
   if (!indicators.empty()) {
-    message << "Indicators:\\n";
+    message << "\nIndicators:\n";
     for (const auto& indicator : indicators) {
-      message << "  • " << indicator << "\\n";
+      message << "  • " << indicator << "\n";
     }
   }
 
