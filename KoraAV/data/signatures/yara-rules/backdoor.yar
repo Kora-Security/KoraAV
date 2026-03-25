@@ -1,5 +1,5 @@
 /*
-   YARA Rules - Linux Backdoor/RAT Detection (Enterprise Quality)
+   YARA Rules - Linux Backdoor/RAT Detection
    Compatible with: YARA v4.x
    Target: Linux ELF binaries, shell scripts, webshells
    Focus: Minimal false positives
