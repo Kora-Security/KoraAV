@@ -1,261 +1,127 @@
 /*
-   YARA Rules - InfoStealer Detection
+   YARA Rules - Linux InfoStealer Detection
    Compatible with: YARA v4.x
-   Author: KoraAV Project Default
-   Description: Detects credential stealers and data exfiltration malware
-   Last Updated: 2025-02-23
+   Target: Linux ELF binaries and shell scripts
+   Focus: Minimal false positives
+   Last Updated: 2026-03-21
 */
 
-import "pe"
+import "elf"
 
-rule InfoStealer_Generic {
+rule Linux_Browser_Credential_Theft {
     meta:
-        description = "Generic infostealer indicators"
+        description = "Detects browser credential theft on Linux"
         severity = "high"
-        confidence = "medium"
+        confidence = "high"
         category = "infostealer"
+        platform = "linux"
         
     strings:
-        // Browser data paths
-        $path1 = "\\Google\\Chrome\\User Data" nocase
-        $path2 = "\\Mozilla\\Firefox\\Profiles" nocase
-        $path3 = "\\Opera\\Opera" nocase
-        $path4 = "\\BraveSoftware\\Brave" nocase
-        $path5 = "Login Data" nocase
-        $path6 = "Cookies" nocase
+        // Linux browser paths (full paths, not fragments)
+        $chrome1 = "/.config/google-chrome/Default/Login Data" nocase
+        $chrome2 = "/.config/google-chrome/Default/Cookies" nocase
+        $firefox1 = "/.mozilla/firefox/" nocase and "logins.json" nocase
+        $firefox2 = "/.mozilla/firefox/" nocase and "key4.db" nocase
         
-        // Crypto wallet paths
-        $crypto1 = "\\Ethereum\\keystore" nocase
-        $crypto2 = "\\Bitcoin\\wallet.dat" nocase
-        $crypto3 = "\\Electrum\\wallets" nocase
-        $crypto4 = "\\Exodus\\exodus.wallet" nocase
+        // Browser databases
+        $sqlite_chrome = "Login Data" and "logins"
+        $sqlite_firefox = "moz_logins"
         
-        // Sensitive data keywords
-        $keyword1 = "password" nocase
-        $keyword2 = "credential" nocase
-        $keyword3 = "cookie" nocase
-        $keyword4 = "autofill" nocase
-        $keyword5 = "wallet" nocase
+        // Exfiltration (Linux network tools)
+        $curl = "curl" fullword and "-d" nocase
+        $wget = "wget" fullword and "--post" nocase
+        $nc = "nc" fullword
         
     condition:
-        (3 of ($path*)) or
-        (2 of ($crypto*)) or
-        (2 of ($path*) and 2 of ($keyword*))
+        (elf.type == elf.ET_EXEC or elf.type == elf.ET_DYN or
+         uint16(0) == 0x2123) and // #! shebang for scripts
+        ((2 of ($chrome*) or 2 of ($firefox*)) and
+         (1 of ($sqlite_*)) and
+         (1 of ($curl, $wget, $nc)))
 }
 
-rule RedLine_Stealer {
+rule Linux_SSH_Key_Theft {
     meta:
-        description = "Detects RedLine stealer"
+        description = "Detects SSH key and credential theft"
         severity = "critical"
         confidence = "high"
         category = "infostealer"
-        family = "RedLine"
+        platform = "linux"
         
     strings:
-        $str1 = "RedLine" nocase
-        $str2 = "\\Browsers\\" nocase
-        $str3 = "\\Wallets\\" nocase
-        $str4 = "\\Discord\\" nocase
-        $str5 = "SystemInfo" nocase
-        $str6 = "Hardware" nocase
-        $str7 = "ScanData" nocase
+        // SSH key locations (full paths)
+        $ssh1 = "/.ssh/id_rsa" nocase
+        $ssh2 = "/.ssh/id_ed25519" nocase
+        $ssh3 = "/.ssh/authorized_keys" nocase
+        $ssh4 = "/.ssh/known_hosts" nocase
+        
+        // AWS credentials
+        $aws1 = "/.aws/credentials" nocase
+        $aws2 = "AWS_ACCESS_KEY_ID" nocase
+        $aws3 = "AWS_SECRET_ACCESS_KEY" nocase
+        
+        // Copy/exfiltration commands
+        $copy = "cp" fullword or "cat" fullword
+        $exfil = "curl" fullword or "wget" fullword or "scp" fullword
         
     condition:
-        3 of them
+        ((3 of ($ssh*)) or (2 of ($aws*))) and
+        $copy and $exfil
 }
 
-rule Raccoon_Stealer {
+rule Linux_Crypto_Wallet_Theft {
     meta:
-        description = "Detects Raccoon stealer"
+        description = "Detects cryptocurrency wallet theft on Linux"
         severity = "critical"
         confidence = "high"
         category = "infostealer"
-        family = "Raccoon"
+        platform = "linux"
         
     strings:
-        $str1 = "RC4" nocase
-        $str2 = "machineId" nocase
-        $str3 = "file_" nocase
-        $str4 = "screenshot_" nocase
-        $str5 = "/gate" nocase
-        $str6 = "Raccoon" nocase
+        // Linux wallet paths (full paths)
+        $wallet1 = "/.bitcoin/wallet.dat" nocase
+        $wallet2 = "/.ethereum/keystore/" nocase
+        $wallet3 = "/.electrum/wallets/" nocase
+        $wallet4 = "/.monero/" nocase
         
-        $api1 = "sqlite3_" nocase
+        // Wallet file operations
+        $find_wallet = "find" nocase and "wallet" nocase
+        $grep_wallet = "grep" nocase and "private" nocase
         
-    condition:
-        3 of ($str*) or (2 of ($str*) and $api1)
-}
-
-rule Vidar_Stealer {
-    meta:
-        description = "Detects Vidar stealer"
-        severity = "critical"
-        confidence = "high"
-        category = "infostealer"
-        family = "Vidar"
-        
-    strings:
-        $str1 = "Vidar" nocase
-        $str2 = "profile" nocase
-        $str3 = "autofill" nocase
-        $str4 = "CC_" nocase
-        $str5 = "History_" nocase
-        $str6 = "*.txt" nocase
+        // Archive and exfiltration
+        $tar = "tar" fullword and "-czf" nocase
+        $exfil = "curl" fullword or "nc" fullword
         
     condition:
-        3 of them
+        (3 of ($wallet*)) and
+        (1 of ($find_wallet, $grep_wallet)) and
+        ($tar or $exfil)
 }
 
-rule AgentTesla_Stealer {
+rule Linux_Environment_Variable_Theft {
     meta:
-        description = "Detects Agent Tesla keylogger/stealer"
-        severity = "critical"
-        confidence = "high"
-        category = "infostealer"
-        family = "AgentTesla"
-        
-    strings:
-        $str1 = "Agent Tesla" nocase
-        $str2 = "get_OSFullName" nocase
-        $str3 = "get_Clipboard" nocase
-        $str4 = "GetAsyncKeyState" nocase
-        $str5 = "MailAddress" nocase
-        
-        // .NET indicators
-        $net1 = "System.Windows.Forms" nocase
-        $net2 = "System.Net.Mail" nocase
-        
-    condition:
-        3 of ($str*) or (2 of ($str*) and 1 of ($net*))
-}
-
-rule LokiBot_Stealer {
-    meta:
-        description = "Detects Loki Bot stealer"
-        severity = "critical"
-        confidence = "high"
-        category = "infostealer"
-        family = "LokiBot"
-        
-    strings:
-        $str1 = "sqlite3_" nocase
-        $str2 = "Login Data" nocase
-        $str3 = "Cookies" nocase
-        $str4 = "Web Data" nocase
-        $str5 = "logins.json" nocase
-        $str6 = "key3.db" nocase
-        
-        $mutex = "3749282D-C0E6-4255-9105" nocase
-        
-    condition:
-        4 of ($str*) or $mutex
-}
-
-rule Formbook_Stealer {
-    meta:
-        description = "Detects Formbook infostealer"
-        severity = "critical"
-        confidence = "high"
-        category = "infostealer"
-        family = "Formbook"
-        
-    strings:
-        $str1 = "sqlite3_open" nocase
-        $str2 = "GetClipboardData" nocase
-        $str3 = "HttpSendRequest" nocase
-        $str4 = "GetKeyState" nocase
-        $str5 = "SetWindowsHook" nocase
-        
-    condition:
-        4 of them
-}
-
-rule AZORult_Stealer {
-    meta:
-        description = "Detects AZORult stealer"
-        severity = "critical"
-        confidence = "high"
-        category = "infostealer"
-        family = "AZORult"
-        
-    strings:
-        $str1 = "AZORult" nocase
-        $str2 = "information.txt" nocase
-        $str3 = "1.txt" nocase
-        $str4 = "passwords.txt" nocase
-        $str5 = "cookies.txt" nocase
-        
-    condition:
-        2 of them
-}
-
-rule MetaStealer {
-    meta:
-        description = "Detects Meta Stealer"
-        severity = "critical"
-        confidence = "high"
-        category = "infostealer"
-        family = "MetaStealer"
-        
-    strings:
-        $str1 = "Meta Stealer" nocase
-        $str2 = "Passwords_" nocase
-        $str3 = "Cookies_" nocase
-        $str4 = "Wallets_" nocase
-        $str5 = "Screenshot_" nocase
-        
-    condition:
-        3 of them
-}
-
-rule Generic_Keylogger {
-    meta:
-        description = "Generic keylogger detection"
+        description = "Detects environment variable credential theft"
         severity = "high"
-        confidence = "medium"
+        confidence = "high"
         category = "infostealer"
+        platform = "linux"
         
     strings:
-        $api1 = "GetAsyncKeyState" nocase
-        $api2 = "GetKeyState" nocase
-        $api3 = "SetWindowsHookEx" nocase
-        $api4 = "GetForegroundWindow" nocase
-        $api5 = "GetWindowText" nocase
+        // Sensitive environment variables
+        $env1 = "AWS_ACCESS_KEY_ID" nocase
+        $env2 = "AWS_SECRET_ACCESS_KEY" nocase
+        $env3 = "GITHUB_TOKEN" nocase
+        $env4 = "DOCKER_PASSWORD" nocase
+        $env5 = "DATABASE_URL" nocase
         
-        $keyword1 = "keylog" nocase
-        $keyword2 = "keystroke" nocase
+        // Environment access
+        $getenv = "getenv" fullword or "os.environ" nocase or "$" and "export" fullword
         
-    condition:
-        (3 of ($api*)) or
-        (2 of ($api*) and 1 of ($keyword*))
-}
-
-rule Browser_Data_Exfiltration {
-    meta:
-        description = "Detects browser data exfiltration attempts"
-        severity = "high"
-        confidence = "medium"
-        category = "infostealer"
-        
-    strings:
-        // SQLite operations (browser databases)
-        $sqlite1 = "sqlite3_open" nocase
-        $sqlite2 = "sqlite3_prepare" nocase
-        $sqlite3 = "sqlite3_step" nocase
-        
-        // Browser database files
-        $db1 = "Login Data"
-        $db2 = "Cookies"
-        $db3 = "Web Data"
-        $db4 = "logins.json"
-        
-        // Network exfiltration
-        $net1 = "InternetOpenUrl" nocase
-        $net2 = "HttpSendRequest" nocase
-        $net3 = "send" nocase
+        // Exfiltration
+        $exfil = "curl" fullword or "wget" fullword or "nc" fullword
         
     condition:
-        (2 of ($sqlite*) and 1 of ($db*)) or
-        (1 of ($db*) and 1 of ($net*))
+        (3 of ($env*)) and
+        $getenv and
+        $exfil
 }
-
