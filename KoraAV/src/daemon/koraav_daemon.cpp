@@ -142,7 +142,7 @@ bool KoraAVDaemon::SetSecureBits() {
     // SecureBits only work when running as a non-root user with capabilities.
     // When running as root, skip silently - root doesn't need securebits.
     if (getuid() == 0) {
-        return true;  // Running as root, securebits not needed
+        return true;
     }
 
     int securebits = SECBIT_KEEP_CAPS |

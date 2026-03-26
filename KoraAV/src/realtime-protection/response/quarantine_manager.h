@@ -1,4 +1,4 @@
-// src/common/quarantine_manager.h
+// src/realtime-protection/response/quarantine_manager.h
 #ifndef KORAAV_QUARANTINE_MANAGER_H
 #define KORAAV_QUARANTINE_MANAGER_H
 

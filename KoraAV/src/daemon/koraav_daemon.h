@@ -6,10 +6,10 @@
 #include "../realtime-protection/behavioral-analysis/ransomware_detector.h"
 #include "../realtime-protection/behavioral-analysis/clickfix_detector.h"
 #include "../realtime-protection/behavioral-analysis/c2_detector.h"
-#include "../realtime-protection/behavioral-analysis/snapshot_system.h"
+#include "../realtime-protection/response/snapshot_system.h"
 #include "../realtime-protection/behavioral-analysis/canary_file_system.h"
 #include "control_socket.h"
-#include "../common/quarantine_manager.h"
+#include "../realtime-protection/response/quarantine_manager.h"
 #include "../common/notification_manager.h"
 #include "../common/yara_manager.h"
 #include <memory>
@@ -80,7 +80,7 @@ namespace daemon {
 
             // NEW: Canary system
             bool enable_canary_files = true;
-            int canaries_per_directory = 3;
+            int canaries_per_directory = 2;
 
             // NEW: Snapshot system
             bool enable_snapshots = true;

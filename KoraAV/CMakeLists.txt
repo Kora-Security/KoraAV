@@ -66,11 +66,11 @@ else()
     message(WARNING "YARA not found - YARA scanning will be disabled")
 endif()
 
-# Common library (capabilities, quarantine, notifications, YARA manager, etc.)
+# Common library (capabilities, notifications, YARA manager)
 # NOTE: YaraManager is now in common library - it's a singleton shared by all scanners
+# NOTE: quarantine_manager has moved to realtime-protection/response/
 add_library(koraav_common STATIC
     src/common/capabilities_manager.cpp
-    src/common/quarantine_manager.cpp
     src/common/notification_manager.cpp
     src/common/yara_manager.cpp          # Centralized YARA rules manager
 )
@@ -128,15 +128,14 @@ add_library(koraav_realtime STATIC
     # YARA real-time scanning (uses YaraManager)
     src/realtime-protection/yara-realtime/realtime_yara_scanner.cpp
 
-    # Response
+    # Response (snapshot, quarantine, firewall, lockdown)
+    src/realtime-protection/response/snapshot_system.cpp
+    src/realtime-protection/response/quarantine_manager.cpp
     src/realtime-protection/response/lockdown_manager.cpp
     src/realtime-protection/response/firewall_manager.cpp
 
-    # Daemon
+    # Daemon IPC
     src/daemon/secure_ipc.cpp
-
-    # File Restore Util
-    src/realtime-protection/behavioral-analysis/snapshot_system.cpp
 )
 
 target_link_libraries(koraav_realtime
@@ -250,4 +249,9 @@ message(STATUS "YARA Rules:")
 message(STATUS "  - Loaded at runtime from /opt/koraav/share/signatures/yara-rules/")
 message(STATUS "  - Users can add custom .yar files and reload")
 message(STATUS "  - CLI and daemon use SAME rules (YaraManager)")
+message(STATUS "Response subsystem (realtime-protection/response/):")
+message(STATUS "  - snapshot_system    (rolling + inotify emergency snapshots)")
+message(STATUS "  - quarantine_manager (malicious file/process isolation)")
+message(STATUS "  - firewall_manager   (network-level response)")
+message(STATUS "  - lockdown_manager   (system-wide lockdown)")
 message(STATUS "==================================")

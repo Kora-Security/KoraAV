@@ -1,4 +1,4 @@
-// src/common/quarantine_manager.cpp
+// src/realtime-protection/response/quarantine_manager.cpp
 #include "quarantine_manager.h"
 #include <iostream>
 #include <fstream>
