@@ -105,7 +105,6 @@ if(YARA_FOUND)
 endif()
 
 # Scanner library
-# NOTE: yara_scanner.cpp is now just a wrapper around YaraManager
 add_library(koraav_scanner STATIC
     # Main scanner files
     src/scanner/scanner_engine.cpp
@@ -114,7 +113,6 @@ add_library(koraav_scanner STATIC
 
     # Signature scanners
     src/scanner/signatures/hash_scanner.cpp
-    src/scanner/signatures/yara_scanner.cpp      # Wrapper for YaraManager
     src/scanner/signatures/hash_db_manager.cpp
 
     # Heuristics
@@ -136,7 +134,6 @@ target_link_libraries(koraav_scanner
 # Note: YARA is already linked via koraav_common, no need to link again
 
 # Real-time protection library
-# NOTE: realtime_yara_scanner.cpp also uses YaraManager (no duplicate rules)
 add_library(koraav_realtime STATIC
     # Behavioral analysis
     src/realtime-protection/behavioral-analysis/infostealer_detector.cpp
@@ -145,8 +142,7 @@ add_library(koraav_realtime STATIC
     src/realtime-protection/behavioral-analysis/c2_detector.cpp
     src/realtime-protection/behavioral-analysis/canary_file_system.cpp
 
-    # YARA real-time scanning (uses YaraManager)
-    src/realtime-protection/yara-realtime/realtime_yara_scanner.cpp
+    # YARA real-time scanning handled directly by YaraManager singleton
 
     # Response (snapshot, quarantine, exclusion, firewall, lockdown)
     src/realtime-protection/response/snapshot_system.cpp

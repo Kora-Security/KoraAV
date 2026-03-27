@@ -5,6 +5,7 @@
 #include <koraav/types.h>
 #include <string>
 #include <memory>
+#include "../common/yara_manager.h"
 
 namespace koraav {
 namespace scanner {
@@ -12,7 +13,6 @@ namespace scanner {
 // Forward declarations
 class SignatureDatabase;
 class HashScanner;
-class YaraScanner;
 class EntropyAnalyzer;
 class ELFAnalyzer;
 class ScriptAnalyzer;
@@ -69,7 +69,6 @@ private:
     
     // Detection engines (owned)
     std::unique_ptr<HashScanner> hash_scanner_;
-    std::unique_ptr<YaraScanner> yara_scanner_;
     std::unique_ptr<EntropyAnalyzer> entropy_analyzer_;
     std::unique_ptr<ELFAnalyzer> elf_analyzer_;
     std::unique_ptr<ScriptAnalyzer> script_analyzer_;
