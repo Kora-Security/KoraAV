@@ -712,7 +712,7 @@ scan_on_execution = true
 scan_on_download = true
 
 [whitelist]
-process_whitelist_file = /etc/koraav/process-whitelist.conf
+exclusion_db_path = /opt/koraav/var/exclusions.db
 EOF
 
     chmod 644 "$CONFIG_DIR/koraav.conf"
@@ -723,49 +723,116 @@ EOF
 
 
 
-create_process_whitelist() {
-    cat > /etc/koraav/process-whitelist.conf << 'EOF'
-# Process Whitelist - one per line
-# These processes will not be monitored for ransomware behavior
+create_exclusion_database() {
+    print_step "Creating Exclusion Database"
 
-# Package managers
-apt
-apt-get
-dpkg
-rpm
-yum
-dnf
-pacman
+    local DB="/opt/koraav/var/exclusions.db"
 
-# System services
-systemd
-systemd-journald
-rsyslogd
+    # The daemon will create the DB on first start via sqlite3_open() +
+    # CreateSchema(), but we pre-seed it here with the same set of
+    # well-known safe processes that used to live in the hardcoded list,
+    # so admins have a useful starting point they can inspect and extend.
 
-# Backup software
-rsync
-rsnapshot
-duplicity
-restic
-borg
+    if ! command -v sqlite3 >/dev/null 2>&1; then
+        print_warning "sqlite3 CLI not found — skipping pre-seed"
+        print_info   "The daemon will create an empty database on first start."
+        print_info   "Add exclusions later with: sudo koraav exclude add ..."
+        return
+    fi
 
-# File system utilities
-logrotate
-updatedb
+    print_info "Pre-seeding exclusion database with common safe processes..."
 
-# Database systems
-mysqld
-postgres
-mongod
-redis-server
+    # Create schema (matches exclusion_manager.cpp exactly)
+    sqlite3 "$DB" << 'SQLEOF'
+CREATE TABLE IF NOT EXISTS exclusions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    type        TEXT    NOT NULL
+                    CHECK(type IN ('PROCESS','PATH','FOLDER','EXTENSION','HASH')),
+    value       TEXT    NOT NULL,
+    comment     TEXT    NOT NULL DEFAULT '',
+    added_by    TEXT    NOT NULL DEFAULT '',
+    created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    UNIQUE(type, value)
+);
+CREATE INDEX IF NOT EXISTS idx_exclusions_type ON exclusions(type);
+SQLEOF
 
-# Our own daemon
-korad
-koraav
-EOF
+    # Helper to insert without failing if UNIQUE constraint fires
+    db_add() {
+        local type="$1" value="$2" comment="$3"
+        sqlite3 "$DB" \
+          "INSERT OR IGNORE INTO exclusions(type,value,comment,added_by) \
+           VALUES('$type','$value','$comment','installer');"
+    }
 
-    chmod 644 "/etc/koraav/process-whitelist.conf"
-    echo "✓ Process whitelist created: /etc/koraav/process-whitelist.conf"
+    # ── Package managers ──────────────────────────────────────────────
+    db_add PROCESS apt             "Debian/Ubuntu package manager"
+    db_add PROCESS apt-get         "Debian/Ubuntu package manager"
+    db_add PROCESS dpkg            "Debian package tool"
+    db_add PROCESS rpm             "RPM package tool"
+    db_add PROCESS yum             "RHEL/CentOS package manager"
+    db_add PROCESS dnf             "Fedora/RHEL package manager"
+    db_add PROCESS pacman          "Arch package manager"
+    db_add PROCESS zypper          "openSUSE package manager"
+
+    # ── Core system services ──────────────────────────────────────────
+    db_add PROCESS systemd         "init/service manager"
+    db_add PROCESS systemd-journald "journal daemon"
+    db_add PROCESS rsyslogd        "syslog daemon"
+    db_add PROCESS sshd            "OpenSSH daemon"
+    db_add PROCESS cron            "cron daemon"
+    db_add PROCESS crond           "cron daemon (RHEL)"
+    db_add PROCESS dbus-daemon     "D-Bus message bus"
+    db_add PROCESS NetworkManager  "network management"
+    db_add PROCESS wpa_supplicant  "Wi-Fi authentication"
+
+    # ── Backup / archival tools ───────────────────────────────────────
+    db_add PROCESS rsync           "file sync / backup"
+    db_add PROCESS rsnapshot       "rsync-based backup"
+    db_add PROCESS duplicity       "encrypted backup"
+    db_add PROCESS borg            "BorgBackup"
+    db_add PROCESS restic          "restic backup"
+    db_add PROCESS bacula-fd       "Bacula file daemon"
+    db_add PROCESS amanda          "Amanda backup"
+
+    # ── Database engines ──────────────────────────────────────────────
+    db_add PROCESS mysqld          "MySQL / MariaDB"
+    db_add PROCESS mariadbd        "MariaDB"
+    db_add PROCESS postgres        "PostgreSQL"
+    db_add PROCESS mongod          "MongoDB"
+    db_add PROCESS redis-server    "Redis"
+    db_add PROCESS cassandra       "Apache Cassandra"
+
+    # ── Desktop file indexers (high write volume, safe) ───────────────
+    db_add PROCESS updatedb        "mlocate database update"
+    db_add PROCESS baloo_file      "KDE file indexer"
+    db_add PROCESS baloo_file_extractor "KDE file extractor"
+    db_add PROCESS tracker-miner-fs "GNOME Tracker"
+    db_add PROCESS tracker-extract "GNOME Tracker extractor"
+
+    # ── KDE / GNOME shell processes ───────────────────────────────────
+    db_add PROCESS plasmashell     "KDE Plasma shell"
+    db_add PROCESS kwin_x11        "KDE window manager"
+    db_add PROCESS kwin_wayland    "KDE window manager (Wayland)"
+    db_add PROCESS gnome-shell     "GNOME shell"
+    db_add PROCESS nautilus        "GNOME Files"
+    db_add PROCESS gvfsd           "GNOME virtual filesystem"
+
+    # ── KoraAV self-protection (belt-and-suspenders) ──────────────────
+    db_add PROCESS korad           "KoraAV daemon (self-protection)"
+    db_add PROCESS koraav          "KoraAV CLI (self-protection)"
+    db_add FOLDER  /opt/koraav     "KoraAV installation directory"
+    db_add FOLDER  /.snapshots/koraav "KoraAV snapshot directory"
+
+    # Lock down permissions
+    chown koraav:koraav "$DB"
+    chmod 600 "$DB"
+
+    local count
+    count=$(sqlite3 "$DB" "SELECT COUNT(*) FROM exclusions;")
+    print_success "Exclusion database created with $count pre-seeded entries"
+    print_info    "View them:  sudo koraav exclude list"
+    print_info    "Add more:   sudo koraav exclude add process /path/to/app"
 }
 
 
@@ -1291,6 +1358,9 @@ rm -rf /opt/koraav
 echo "Removing data directory..."
 rm -rf /var/lib/koraav 2>/dev/null || true
 
+echo "Removing exclusion database..."
+rm -f /opt/koraav/var/exclusions.db 2>/dev/null || true
+
 echo "Removing socket directory..."
 rm -rf /var/run/koraav 2>/dev/null || true
 
@@ -1361,6 +1431,14 @@ print_summary() {
     echo "  View logs:       sudo journalctl -u korad -f"
     echo "  Edit config:     sudo nano $CONFIG_DIR/koraav.conf"
     echo ""
+    echo -e "${CYAN}Exclusion Management:${NC}"
+    echo "  List exclusions: sudo koraav exclude list"
+    echo "  Add process:     sudo koraav exclude add process /path/to/app"
+    echo "  Add folder:      sudo koraav exclude add folder /path/to/dir"
+    echo "  Remove by ID:    sudo koraav exclude remove <id>"
+    echo "  Apply changes:   sudo koraav exclude reload"
+    echo "  DB location:     /opt/koraav/var/exclusions.db (koraav:koraav 0600)"
+    echo ""
     echo -e "${CYAN}YARA Rules (NEW Architecture):${NC}"
     echo "  • Rules loaded at RUNTIME (not compiled into binary)"
     echo "  • Add custom rules: $INSTALL_DIR/share/signatures/yara-rules/custom/"
@@ -1393,7 +1471,7 @@ main() {
     install_files
     create_hash_database
     create_config
-    create_process_whitelist
+    create_exclusion_database
     create_systemd_service
     enable_service
     setup_notification_helper

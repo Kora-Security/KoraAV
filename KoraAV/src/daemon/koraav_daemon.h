@@ -10,6 +10,7 @@
 #include "../realtime-protection/behavioral-analysis/canary_file_system.h"
 #include "control_socket.h"
 #include "../realtime-protection/response/quarantine_manager.h"
+#include "../realtime-protection/response/exclusion_manager.h"
 #include "../common/notification_manager.h"
 #include "../common/yara_manager.h"
 #include <memory>
@@ -47,6 +48,12 @@ namespace daemon {
             * - Start detection engines
             */
         bool Initialize(const std::string& config_path = "/etc/koraav/koraav.conf");
+
+        /**
+         * Reload the exclusion database from disk (called on SIGHUP).
+         * Safe to call from a signal handler via a flag mechanism.
+         */
+        void ReloadExclusions();
 
         /**
             * Start the daemon
@@ -124,7 +131,7 @@ namespace daemon {
             bool yara_scan_on_download = true;
 
             // Whitelist
-            std::string process_whitelist_file = "/etc/koraav/process-whitelist.conf";
+            std::string exclusion_db_path = "/opt/koraav/var/exclusions.db";
         };
 
         Config config_;
@@ -151,6 +158,7 @@ namespace daemon {
 
         // Quarantine manager
         std::unique_ptr<QuarantineManager> quarantine_manager_;
+        std::unique_ptr<realtime::ExclusionManager> exclusion_manager_;
 
         // Notification manager
         std::unique_ptr<NotificationManager> notification_manager_;
@@ -242,6 +250,7 @@ namespace daemon {
         
         // CRITICAL: Whitelist and self-protection
         bool ShouldIgnoreProcess(uint32_t tgid, const std::string& exe_path);
+        bool ShouldIgnorePath(const std::string& file_path);
         std::string GetProcessExecutablePath(uint32_t pid);
         
         void LogThreat(uint32_t tgid, const std::string& threat_type,

@@ -1,20 +1,26 @@
 // src/cli/koraav_main.cpp
 // Unified KoraAV Command-Line Interface
-// Combines scanner, rule manager, database manager, and unlock into one binary
+// Combines scanner, rule manager, database manager, unlock, and exclusion management
 
 #include "../scanner/scanner_engine.h"
 #include "../scanner/signatures/hash_db_manager.h"
+#include "../realtime-protection/response/exclusion_manager.h"
 #include <iostream>
 #include <iomanip>
 #include <chrono>
 #include <vector>
 #include <string>
 #include <cstring>
+#include <cerrno>
+#include <algorithm>
+#include <fstream>
 #include <unistd.h>
 #include <cstdlib>
+#include <signal.h>
 
 using namespace koraav;
 using namespace koraav::scanner;
+using namespace koraav::realtime;
 
 // Progress tracking (could be better looking lol)
 struct ProgressTracker {
@@ -167,6 +173,7 @@ int HandleScan(int argc, char** argv);
 int HandleDatabase(int argc, char** argv);
 int HandleRules(int argc, char** argv);
 int HandleUnlock(int argc, char** argv);
+int HandleExclusion(int argc, char** argv);
 
 int main(int argc, char** argv) {
     if (argc < 2) {
@@ -188,6 +195,9 @@ int main(int argc, char** argv) {
     }
     else if (command == "unlock") {
         return HandleUnlock(argc, argv);
+    }
+    else if (command == "exclude" || command == "exclusion" || command == "whitelist") {
+        return HandleExclusion(argc, argv);
     }
     else if (command == "help" || command == "--help" || command == "-h") {
         ShowHelp(argv[0]);
@@ -218,51 +228,70 @@ SCANNING COMMANDS:
   scan quick                    Quick scan of common locations
   scan full                     Full system scan
   scan <path> [path...]         Scan specific files/directories
-  
+
 DATABASE COMMANDS:
   db create <file>              Create new malware hash database
   db add <hash> [signature]     Add hash to database
   db remove <hash>              Remove hash from database
   db list                       List all hashes
   db check <hash>               Check if hash exists
-  
+
 RULE MANAGEMENT:
   rules add <file.yar>          Add custom YARA rule
-  rules remove <name>           Remove YARA rule
+  rules remove <n>              Remove YARA rule
   rules list                    List all active rules
   rules validate <file>         Validate rule syntax
   rules update                  Update rules from online sources
   rules reload                  Reload all rules
-  rules info <name>             Show rule details
-  
+  rules info <n>                Show rule details
+
+EXCLUSION MANAGEMENT:  (all write operations require sudo)
+  exclude list                  List all exclusions
+  exclude list <type>           List by type: process|path|folder|extension|hash
+  exclude add process <path>    Exclude a process by exe path or name
+  exclude add path <file>       Exclude a specific file path
+  exclude add folder <dir>      Exclude all files under a directory
+  exclude add extension <ext>   Exclude all files with an extension (.vmdk etc.)
+  exclude add hash <sha256>     Exclude a file by SHA-256 hash
+  exclude remove <id>           Remove an exclusion by its numeric ID
+  exclude remove <type> <val>   Remove by type and value
+  exclude reload                Signal daemon to reload exclusions (sends SIGHUP)
+
 SYSTEM UNLOCK:
   unlock --filesystem           Restore filesystem to read-write
   unlock --network              Restore network access
   unlock --all                  Restore everything (full unlock)
-  
+
 OTHER COMMANDS:
   help                          Show this help message
   version                       Show version information
 
+Exclusion types:
+  process    Matched against full exe path OR basename.
+             Use for apps that legitimately write many files
+             (backup tools, VMs, databases, etc.)
+  path       Exact single file — only that file is excluded.
+  folder     Directory prefix — everything under that path.
+  extension  File extension, e.g. .vmdk .iso .bak
+  hash       SHA-256 of a specific binary — most precise.
+
 Examples:
-  # Quick scan
+  sudo )" << prog << R"( exclude add process /opt/myapp/bin/myapp
+  sudo )" << prog << R"( exclude add folder "/home/user/VirtualBox VMs"
+  sudo )" << prog << R"( exclude add extension .iso
+  sudo )" << prog << R"( exclude list
+  sudo )" << prog << R"( exclude remove 3
+  sudo )" << prog << R"( exclude reload
+
   )" << prog << R"( scan quick
-  
-  # Scan a directory
   )" << prog << R"( scan /home/user/Downloads
-  
-  # Add custom YARA rule
   sudo )" << prog << R"( rules add my-malware.yar
-  
-  # Create hash database
-  sudo )" << prog << R"( db create /opt/koraav/var/db/hashes.db
-  
-  # Emergency system unlock
   sudo )" << prog << R"( unlock --all
 
 For more information, visit: https://github.com/Kora-Security/KoraAV
 )";
 }
+
 
 int HandleScan(int argc, char** argv) {
     std::string scan_type;
@@ -426,4 +455,263 @@ int HandleUnlock(int argc, char** argv) {
         std::cerr << "Unknown unlock option: " << option << std::endl;
         return 1;
     }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// EXCLUSION MANAGEMENT COMMAND
+// All write subcommands (add / remove / reload) require root (sudo).
+// 'list' is readable by anyone so admins can audit without privilege.
+// ════════════════════════════════════════════════════════════════════════════
+
+static const std::string EXCLUSION_DB = "/opt/koraav/var/exclusions.db";
+
+// Pretty-print a timestamp
+static std::string FormatTimestamp(
+    const std::chrono::system_clock::time_point& tp) {
+    std::time_t t = std::chrono::system_clock::to_time_t(tp);
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", std::localtime(&t));
+    return buf;
+}
+
+// Column-aligned table printer
+static void PrintExclusionTable(
+    const std::vector<ExclusionManager::Exclusion>& items) {
+    if (items.empty()) {
+        std::cout << "  (no entries)" << std::endl;
+        return;
+    }
+    std::cout << std::left
+              << std::setw(6)  << "ID"
+              << std::setw(12) << "TYPE"
+              << std::setw(42) << "VALUE"
+              << std::setw(18) << "ADDED BY"
+              << std::setw(18) << "DATE"
+              << "COMMENT" << std::endl;
+    std::cout << std::string(110, '-') << std::endl;
+    for (const auto& ex : items) {
+        std::string val = ex.value;
+        if (val.size() > 40) val = val.substr(0, 37) + "...";
+        std::cout << std::left
+                  << std::setw(6)  << ex.id
+                  << std::setw(12) << ExclusionManager::TypeToString(ex.type)
+                  << std::setw(42) << val
+                  << std::setw(18) << ex.added_by
+                  << std::setw(18) << FormatTimestamp(ex.created_at)
+                  << ex.comment << std::endl;
+    }
+    std::cout << std::string(110, '-') << std::endl;
+    std::cout << items.size() << " exclusion(s)" << std::endl;
+}
+
+int HandleExclusion(int argc, char** argv) {
+    if (argc < 3) {
+        std::cerr << "Usage: " << argv[0]
+                  << " exclude <list|add|remove|reload> [args]\n"
+                  << "Run '" << argv[0] << " help' for full usage." << std::endl;
+        return 1;
+    }
+
+    std::string sub = argv[2];
+
+    // ── list ──────────────────────────────────────────────────────────────
+    // Readable without root — anyone can see what's excluded.
+    if (sub == "list") {
+        ExclusionManager mgr(EXCLUSION_DB);
+        if (!mgr.Initialize()) {
+            std::cerr << "❌ Could not open exclusion database." << std::endl;
+            return 1;
+        }
+
+        if (argc >= 4) {
+            // Filter by type
+            std::string type_str = argv[3];
+            // Uppercase it
+            std::transform(type_str.begin(), type_str.end(),
+                           type_str.begin(), ::toupper);
+            try {
+                auto type = ExclusionManager::StringToType(type_str);
+                auto items = mgr.ListByType(type);
+                std::cout << "\n=== Exclusions: " << type_str << " ===" << std::endl;
+                PrintExclusionTable(items);
+            } catch (...) {
+                std::cerr << "Unknown type '" << argv[3]
+                          << "'. Valid: process path folder extension hash"
+                          << std::endl;
+                return 1;
+            }
+        } else {
+            auto items = mgr.ListAll();
+            std::cout << "\n=== All Exclusions ===" << std::endl;
+            PrintExclusionTable(items);
+        }
+        return 0;
+    }
+
+    // ── All write operations require root ─────────────────────────────────
+    if (sub == "add" || sub == "remove" || sub == "reload") {
+        if (getuid() != 0) {
+            std::cerr << "❌ '" << sub << "' requires root privileges.\n"
+                      << "   Run: sudo " << argv[0]
+                      << " exclude " << sub << std::endl;
+            return 1;
+        }
+    }
+
+    // ── add ───────────────────────────────────────────────────────────────
+    if (sub == "add") {
+        if (argc < 5) {
+            std::cerr << "Usage: sudo " << argv[0]
+                      << " exclude add <type> <value> [--comment \"...\"]"
+                      << std::endl;
+            return 1;
+        }
+
+        std::string type_str = argv[3];
+        std::transform(type_str.begin(), type_str.end(),
+                       type_str.begin(), ::toupper);
+
+        std::string value = argv[4];
+
+        // Optional --comment flag
+        std::string comment;
+        for (int i = 5; i < argc - 1; i++) {
+            if (std::string(argv[i]) == "--comment") {
+                comment = argv[i + 1];
+                break;
+            }
+        }
+
+        ExclusionManager::ExclusionType type;
+        try {
+            type = ExclusionManager::StringToType(type_str);
+        } catch (...) {
+            std::cerr << "❌ Unknown exclusion type '" << argv[3] << "'.\n"
+                      << "   Valid types: process  path  folder  extension  hash"
+                      << std::endl;
+            return 1;
+        }
+
+        // Validate extension format
+        if (type == ExclusionManager::ExclusionType::EXTENSION) {
+            if (value[0] != '.') value = "." + value;
+        }
+
+        ExclusionManager mgr(EXCLUSION_DB);
+        if (!mgr.Initialize()) {
+            std::cerr << "❌ Could not open exclusion database." << std::endl;
+            return 1;
+        }
+
+        if (!mgr.AddExclusion(type, value, comment)) {
+            std::cerr << "❌ Failed to add exclusion (may already exist)." << std::endl;
+            return 1;
+        }
+
+        std::cout << "✓ Exclusion added: ["
+                  << ExclusionManager::TypeToString(type) << "] " << value;
+        if (!comment.empty()) std::cout << "  (" << comment << ")";
+        std::cout << std::endl;
+        std::cout << "  Run 'sudo " << argv[0]
+                  << " exclude reload' to apply immediately." << std::endl;
+        return 0;
+    }
+
+    // ── remove ────────────────────────────────────────────────────────────
+    if (sub == "remove") {
+        if (argc < 4) {
+            std::cerr << "Usage: sudo " << argv[0]
+                      << " exclude remove <id>\n"
+                      << "   OR: sudo " << argv[0]
+                      << " exclude remove <type> <value>" << std::endl;
+            return 1;
+        }
+
+        ExclusionManager mgr(EXCLUSION_DB);
+        if (!mgr.Initialize()) {
+            std::cerr << "❌ Could not open exclusion database." << std::endl;
+            return 1;
+        }
+
+        // Numeric ID or type+value?
+        bool is_numeric = true;
+        for (char c : std::string(argv[3])) {
+            if (!std::isdigit(c)) { is_numeric = false; break; }
+        }
+
+        if (is_numeric) {
+            int64_t id = std::stoll(argv[3]);
+            if (!mgr.RemoveExclusion(id)) {
+                std::cerr << "❌ No exclusion with ID " << id << std::endl;
+                return 1;
+            }
+            std::cout << "✓ Exclusion #" << id << " removed." << std::endl;
+        } else {
+            if (argc < 5) {
+                std::cerr << "Usage: sudo " << argv[0]
+                          << " exclude remove <type> <value>" << std::endl;
+                return 1;
+            }
+            std::string type_str = argv[3];
+            std::transform(type_str.begin(), type_str.end(),
+                           type_str.begin(), ::toupper);
+            std::string value = argv[4];
+            auto type = ExclusionManager::StringToType(type_str);
+            if (!mgr.RemoveExclusionByValue(type, value)) {
+                std::cerr << "❌ Entry not found: ["
+                          << type_str << "] " << value << std::endl;
+                return 1;
+            }
+            std::cout << "✓ Removed [" << type_str << "] " << value << std::endl;
+        }
+
+        std::cout << "  Run 'sudo " << argv[0]
+                  << " exclude reload' to apply immediately." << std::endl;
+        return 0;
+    }
+
+    // ── reload ────────────────────────────────────────────────────────────
+    // Sends SIGHUP to the running korad daemon so it reloads the exclusion
+    // DB without a full restart.
+    if (sub == "reload") {
+        // Find korad PID via /var/run/koraav/korad.pid or pidof
+        pid_t daemon_pid = 0;
+
+        // Try pidfile first
+        std::ifstream pidfile("/var/run/koraav/korad.pid");
+        if (pidfile) {
+            pidfile >> daemon_pid;
+        }
+
+        // Fall back to pidof
+        if (daemon_pid <= 0) {
+            FILE* pipe = popen("pidof korad 2>/dev/null", "r");
+            if (pipe) {
+                fscanf(pipe, "%d", &daemon_pid);
+                pclose(pipe);
+            }
+        }
+
+        if (daemon_pid <= 0) {
+            std::cerr << "⚠️  korad daemon does not appear to be running.\n"
+                      << "   Exclusions will be loaded on next daemon start."
+                      << std::endl;
+            return 0;
+        }
+
+        if (kill(daemon_pid, SIGHUP) == 0) {
+            std::cout << "✓ Sent SIGHUP to korad (PID " << daemon_pid
+                      << ") — exclusion database will reload momentarily."
+                      << std::endl;
+        } else {
+            std::cerr << "❌ Could not signal korad (PID " << daemon_pid
+                      << "): " << strerror(errno) << std::endl;
+            return 1;
+        }
+        return 0;
+    }
+
+    std::cerr << "Unknown exclude subcommand: " << sub << "\n"
+              << "Valid: list  add  remove  reload" << std::endl;
+    return 1;
 }

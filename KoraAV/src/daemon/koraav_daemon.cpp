@@ -142,7 +142,7 @@ bool KoraAVDaemon::SetSecureBits() {
     // SecureBits only work when running as a non-root user with capabilities.
     // When running as root, skip silently - root doesn't need securebits.
     if (getuid() == 0) {
-        return true;
+        return true;  // Running as root, securebits not needed
     }
 
     int securebits = SECBIT_KEEP_CAPS |
@@ -212,6 +212,15 @@ bool KoraAVDaemon::Initialize(const std::string& config_path) {
     // Initialize quarantine manager
     quarantine_manager_ = std::make_unique<QuarantineManager>("/opt/koraav/var/quarantine");
     std::cout << "✓ Quarantine manager initialized" << std::endl;
+
+    // Initialize exclusion (whitelist) manager
+    exclusion_manager_ = std::make_unique<realtime::ExclusionManager>(config_.exclusion_db_path);
+    if (!exclusion_manager_->Initialize()) {
+        std::cerr << "⚠️  Exclusion manager could not open database — "
+                     "running without user exclusions" << std::endl;
+        exclusion_manager_.reset();
+    }
+
     
     // Initialize notification manager
     notification_manager_ = std::make_unique<NotificationManager>();
@@ -365,14 +374,13 @@ void KoraAVDaemon::Run() {
         std::cout << "✓ Ransomware protection active (behavioral analysis)" << std::endl;
     }
 
-    // Start snapshot creation thread (every 5 minutes)
+    // Start snapshot creation thread (every X minutes)
     std::thread snapshot_thread([this]() {
-        std::cout << "Snapshot thread started (5-minute intervals)" << std::endl;
+        std::cout << "Snapshot thread started (X-minute intervals)" << std::endl;
 
         while (running_) {
-            // Sleep 5 minutes
-            std::this_thread::sleep_for(std::chrono::minutes(5));
-
+            // Sleep X minutes
+            std::this_thread::sleep_for(std::chrono::minutes(config_.snapshot_interval_minutes));
             if (snapshot_system_) {
                 std::string snap_id = snapshot_system_->CreateSnapshot();
                 if (!snap_id.empty()) {
@@ -497,6 +505,16 @@ void KoraAVDaemon::Stop() {
     std::cout << "✓ KoraAV stopped" << std::endl;
 }
 
+void KoraAVDaemon::ReloadExclusions() {
+    if (exclusion_manager_) {
+        if (exclusion_manager_->Reload()) {
+            std::cout << "✓ Exclusion database reloaded" << std::endl;
+        } else {
+            std::cerr << "⚠️  Failed to reload exclusion database" << std::endl;
+        }
+    }
+}
+
 bool KoraAVDaemon::LoadConfiguration(const std::string& config_path) {
     std::cout << "Loading configuration from: " << config_path << std::endl;
 
@@ -558,7 +576,7 @@ bool KoraAVDaemon::LoadConfiguration(const std::string& config_path) {
     config_.yara_scan_on_execution = true;
     config_.yara_scan_on_download = true;
 
-    config_.process_whitelist_file = "/etc/koraav/process-whitelist.conf";
+    config_.exclusion_db_path = "/opt/koraav/var/exclusions.db";
 
     // Try to open config file
     std::ifstream config_file(config_path);
@@ -653,7 +671,12 @@ bool KoraAVDaemon::LoadConfiguration(const std::string& config_path) {
             else if (key == "scan_on_download") config_.yara_scan_on_download = (value == "true");
         }
         else if (current_section == "whitelist") {
-            if (key == "process_whitelist_file") config_.process_whitelist_file = value;
+            if (key == "exclusion_db_path") config_.exclusion_db_path = value;
+            // Legacy key still honoured for backwards compatibility
+            else if (key == "process_whitelist_file") {
+                std::cerr << "⚠️  koraav.conf: 'process_whitelist_file' is deprecated; "
+                             "use 'exclusion_db_path' instead" << std::endl;
+            }
         }
     }
 
@@ -847,6 +870,7 @@ bool KoraAVDaemon::AttacheBPFProbes() {
 
 
 // TODO: Add discord and steam paths
+// This is for infostealer detection.
 bool KoraAVDaemon::IsSensitiveFile(const std::string& path) {
     // Check for sensitive file patterns AND directories
     // IMPORTANT: Match directory patterns too, not just specific files,
@@ -992,9 +1016,12 @@ void KoraAVDaemon::AnalyzeFileEvents() {
 
         if (filename.empty() || evt.tgid == 0) continue;
 
+        // ── Exclusion check: skip files/folders the user has excluded ──
+        if (ShouldIgnorePath(filename)) continue;
+
         // DEBUG: Log first 20 events to see what's happening
         if (++event_count <= 20) {
-            std::cout << "[DEBUG AnalyzeFile " << event_count << "] File: " << filename 
+            std::cout << "[DEBUG AnalyzeFile " << event_count << "] File: " << filename
                       << " | PID: " << evt.tgid << " | Proc: " << proc_name << std::endl;
         }
 
@@ -1649,102 +1676,86 @@ void KoraAVDaemon::RunPeriodicAnalysis() {
 
 bool KoraAVDaemon::ShouldIgnoreProcess(uint32_t tgid, const std::string& exe_path) {
     // ═══════════════════════════════════════════════════════════
-    // 1. SELF-PROTECTION: Never kill ourselves!
+    // LAYER 1 — MANDATORY SELF-PROTECTION (never user-configurable)
+    // These checks run before the exclusion DB so that even a
+    // corrupted or empty database cannot cause us to kill ourselves.
     // ═══════════════════════════════════════════════════════════
-    
+
     if (exe_path.find("/opt/koraav/") == 0 ||
-        exe_path == "/usr/bin/koraav" ||
-        exe_path == "/usr/bin/korad" ||
+        exe_path == "/usr/bin/koraav"      ||
+        exe_path == "/usr/bin/korad"       ||
         exe_path.find("koraav") != std::string::npos) {
-        return true;  // Never scan/kill ourselves
+        return true;  // Never act on our own processes
     }
-    
+
     // ═══════════════════════════════════════════════════════════
-    // 2. SYSTEM BINARIES: Don't kill critical system processes
+    // LAYER 2 — EXCLUSION DATABASE (user-managed via CLI)
+    // Checked second so user rules apply before the broader
+    // system-binary heuristic, giving administrators fine control.
     // ═══════════════════════════════════════════════════════════
-    
-    if (exe_path.find("/bin/") == 0 ||
-        exe_path.find("/sbin/") == 0 ||
-        exe_path.find("/usr/bin/") == 0 ||
-        exe_path.find("/usr/sbin/") == 0 ||
-        exe_path.find("/lib/systemd/") == 0) {
-        return true;  // System binaries
+
+    if (exclusion_manager_ && exclusion_manager_->IsProcessExcluded(exe_path)) {
+        std::cout << "   ✓ [exclusion-db] Process excluded: " << exe_path << std::endl;
+        return true;
     }
-    
+
     // ═══════════════════════════════════════════════════════════
-    // 3. PARENT PROCESS CHECK: System services
+    // LAYER 3 — SYSTEM BINARY HEURISTIC (built-in safety net)
+    // Covers standard FHS paths so a fresh install without any
+    // user exclusions still doesn't kill system daemons.
+    // Note: /usr/bin and /usr/sbin are intentionally NOT excluded
+    // wholesale here — a user-installed malicious script in /usr/bin
+    // should still be detectable.  Only paths that are read-only
+    // in a standard Linux install are included.
     // ═══════════════════════════════════════════════════════════
-    
+
+    if (exe_path.find("/lib/systemd/") == 0 ||
+        exe_path.find("/usr/lib/systemd/") == 0) {
+        return true;  // systemd internals
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // LAYER 4 — PARENT PROCESS CHECK
+    // Processes spawned directly by PID 1 (init/systemd) are
+    // almost always system services; skip them unless they appear
+    // in the exclusion DB with a comment explaining the risk.
+    // ═══════════════════════════════════════════════════════════
+
     std::string stat_path = "/proc/" + std::to_string(tgid) + "/stat";
     std::ifstream stat_file(stat_path);
     if (stat_file) {
         std::string line;
         std::getline(stat_file, line);
-        
-        // Parse ppid (parent process ID) from /proc/pid/stat
-        // Format: pid (comm) state ppid ...
+
         size_t first_paren = line.find('(');
-        size_t last_paren = line.rfind(')');
+        size_t last_paren  = line.rfind(')');
         if (first_paren != std::string::npos && last_paren != std::string::npos) {
             std::string after_comm = line.substr(last_paren + 1);
             std::istringstream iss(after_comm);
-            char state;
+            char     state;
             uint32_t ppid;
             iss >> state >> ppid;
-            
-            // If parent is init/systemd (PID 1), likely a system service
-            if (ppid == 1) {
-                return true;
-            }
+            if (ppid == 1) return true;
         }
     }
-    
-    // ═══════════════════════════════════════════════════════════
-    // 4. WHITELIST FILE (if configured)
-    // ═══════════════════════════════════════════════════════════
-    
-    // TODO: Load whitelist from config_.process_whitelist_file
-    // For now, hardcode common legitimate processes
-    std::vector<std::string> whitelist = {
-        // System management
-        "systemd", "init", "sshd", "cron",
-        "apt", "apt-get", "dpkg", "rpm", "yum", "dnf",
-        
-        // Backup tools
-        "rsync", "rsnapshot", "duplicity", "borg",
-        
-        // Databases
-        "mysqld", "postgres", "mongod", "redis-server",
-        
-        // KDE/Qt processes (file indexing, thumbnails, etc.)
-        "kioworker", "kiod5", "kioslave", "baloo_file",
-        "baloo_file_extractor", "kdeinit5", "kded5",
-        "plasma", "plasmashell", "kwin", "krunner",
-        
-        // GNOME processes
-        "gnome-shell", "nautilus", "tracker-miner",
-        "tracker-extract", "gvfs", "gvfsd",
-        
-        // File indexers (all desktops)
-        "updatedb", "locate", "mlocate",
-        
-        // System services
-        "dbus-daemon", "systemd-logind", "polkitd",
-        "udisksd", "upowerd", "NetworkManager"
-    };
-    
-    // Extract process name from path
-    size_t last_slash = exe_path.rfind('/');
-    std::string proc_name = (last_slash != std::string::npos) ? 
-                            exe_path.substr(last_slash + 1) : exe_path;
-    
-    for (const auto& whitelisted : whitelist) {
-        if (proc_name == whitelisted) {
-            return true;
-        }
+
+    return false;  // Not excluded — proceed with detection
+}
+
+// Check whether a file path should be ignored for scanning / detection.
+// This is the file-path counterpart to ShouldIgnoreProcess().
+bool KoraAVDaemon::ShouldIgnorePath(const std::string& file_path) {
+    // Snapshot directory is always off-limits
+    if (file_path.find("/.snapshots/koraav") == 0) return true;
+    if (file_path.find("/opt/koraav/")        == 0) return true;
+
+    // Consult the exclusion database
+    if (exclusion_manager_ && exclusion_manager_->IsPathExcluded(file_path)) {
+        std::cout << "   ✓ [exclusion-db] Path excluded: " << file_path << std::endl;
+        return true;
     }
-    
-    return false;  // Not whitelisted, can be scanned
+
+    return false;
 }
 
 std::string KoraAVDaemon::GetProcessExecutablePath(uint32_t pid) {

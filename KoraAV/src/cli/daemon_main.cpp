@@ -19,6 +19,13 @@ void signal_handler(int signal) {
             g_daemon->Stop();
         }
     }
+    else if (signal == SIGHUP) {
+        // SIGHUP: reload configuration and exclusion database live
+        std::cout << "\n[SIGHUP] Reloading exclusion database..." << std::endl;
+        if (g_daemon) {
+            g_daemon->ReloadExclusions();
+        }
+    }
 }
 
 void show_usage(const char* prog) {
@@ -67,8 +74,9 @@ int main(int argc, char** argv) {
     g_daemon = &daemon;
 
     // Set up signal handlers
-    signal(SIGINT, signal_handler);
+    signal(SIGINT,  signal_handler);
     signal(SIGTERM, signal_handler);
+    signal(SIGHUP,  signal_handler);  // reload exclusion DB without restart
 
     // Initialize
     if (!daemon.Initialize(config_path)) {

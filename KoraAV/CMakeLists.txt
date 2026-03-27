@@ -66,6 +66,26 @@ else()
     message(WARNING "YARA not found - YARA scanning will be disabled")
 endif()
 
+# Find SQLite3 (required for exclusion database)
+# We use pkg-config unconditionally rather than find_package(SQLite3) because
+# FindSQLite3's IMPORTED target (SQLite3::SQLite3) is not reliably created on
+# all distro-patched CMake builds (Arch CMake sets SQLite3_FOUND but omits the
+# imported target when the library is in a non-standard path).
+# pkg-config is already required and works consistently on all supported distros.
+pkg_check_modules(SQLITE3 REQUIRED sqlite3)
+if(SQLITE3_FOUND)
+    include_directories(${SQLITE3_INCLUDE_DIRS})
+    link_directories(${SQLITE3_LIBRARY_DIRS})
+    message(STATUS "SQLite3 found via pkg-config: ${SQLITE3_VERSION}")
+else()
+    message(FATAL_ERROR
+        "SQLite3 not found.\n"
+        "  Debian/Ubuntu : sudo apt install libsqlite3-dev\n"
+        "  Arch          : sudo pacman -S sqlite\n"
+        "  Fedora/RHEL   : sudo dnf install sqlite-devel")
+endif()
+
+
 # Common library (capabilities, notifications, YARA manager)
 # NOTE: YaraManager is now in common library - it's a singleton shared by all scanners
 # NOTE: quarantine_manager has moved to realtime-protection/response/
@@ -128,9 +148,10 @@ add_library(koraav_realtime STATIC
     # YARA real-time scanning (uses YaraManager)
     src/realtime-protection/yara-realtime/realtime_yara_scanner.cpp
 
-    # Response (snapshot, quarantine, firewall, lockdown)
+    # Response (snapshot, quarantine, exclusion, firewall, lockdown)
     src/realtime-protection/response/snapshot_system.cpp
     src/realtime-protection/response/quarantine_manager.cpp
+    src/realtime-protection/response/exclusion_manager.cpp
     src/realtime-protection/response/lockdown_manager.cpp
     src/realtime-protection/response/firewall_manager.cpp
 
@@ -143,6 +164,7 @@ target_link_libraries(koraav_realtime
     koraav_scanner  # For backwards compatibility
     ${CAP_LIBRARY}
     stdc++fs        # C++17 filesystem support (required for ransomware detector)
+    ${SQLITE3_LIBRARIES}
 )
 
 
@@ -166,8 +188,10 @@ add_executable(koraav
 )
 
 target_link_libraries(koraav
+    koraav_realtime
     koraav_scanner
     koraav_common
+    ${SQLITE3_LIBRARIES}
 )
 
 # Daemon executable
