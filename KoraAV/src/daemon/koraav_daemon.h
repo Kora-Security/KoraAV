@@ -87,7 +87,7 @@ namespace daemon {
 
             // NEW: Canary system
             bool enable_canary_files = true;
-            int canaries_per_directory = 3;
+            int canaries_per_directory = 2;
 
             // NEW: Snapshot system
             bool enable_snapshots = true;
