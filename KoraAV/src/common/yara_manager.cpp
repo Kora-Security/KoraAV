@@ -224,8 +224,8 @@ std::vector<std::string> YaraManager::ScanFile(const std::string& path) {
         return matches;
     }
     
-    // 3. Skip oversized files (>100 MB)
-    const off_t MAX_FILE_SIZE = 100 * 1024 * 1024;  // 100 MB (match st.st_size type)
+    // 3. Skip oversized files (>200 MB)
+    const off_t MAX_FILE_SIZE = 200 * 1024 * 1024;  // 200 MB (match st.st_size type)
     if (st.st_size > MAX_FILE_SIZE) {
         std::cerr << "⚠️  File too large (" << (st.st_size / 1024 / 1024) 
                   << " MB), skipping: " << path << std::endl;
