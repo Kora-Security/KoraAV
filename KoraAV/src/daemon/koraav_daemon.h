@@ -10,7 +10,7 @@
 #include "../realtime-protection/behavioral-analysis/canary_file_system.h"
 #include "control_socket.h"
 #include "../realtime-protection/response/quarantine_manager.h"
-#include "../realtime-protection/response/exclusion_manager.h"
+#include "../common/exclusion_manager.h"
 #include "../common/notification_manager.h"
 #include "../common/yara_manager.h"
 #include <memory>

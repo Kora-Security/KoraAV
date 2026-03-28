@@ -4,7 +4,7 @@
 
 #include "../scanner/scanner_engine.h"
 #include "../scanner/signatures/hash_db_manager.h"
-#include "../realtime-protection/response/exclusion_manager.h"
+#include "../common/exclusion_manager.h"
 #include <iostream>
 #include <iomanip>
 #include <chrono>

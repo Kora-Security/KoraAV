@@ -86,13 +86,14 @@ else()
 endif()
 
 
-# Common library (capabilities, notifications, YARA manager)
+# Common library (capabilities, notifications, YARA manager, exclusions)
 # NOTE: YaraManager is now in common library - it's a singleton shared by all scanners
 # NOTE: quarantine_manager has moved to realtime-protection/response/
 add_library(koraav_common STATIC
     src/common/capabilities_manager.cpp
     src/common/notification_manager.cpp
     src/common/yara_manager.cpp          # Centralized YARA rules manager
+    src/common/exclusion_manager.cpp
 )
 
 target_link_libraries(koraav_common
@@ -144,10 +145,9 @@ add_library(koraav_realtime STATIC
 
     # YARA real-time scanning handled directly by YaraManager singleton
 
-    # Response (snapshot, quarantine, exclusion, firewall, lockdown)
+    # Response (snapshot, quarantine, firewall, lockdown)
     src/realtime-protection/response/snapshot_system.cpp
     src/realtime-protection/response/quarantine_manager.cpp
-    src/realtime-protection/response/exclusion_manager.cpp
     src/realtime-protection/response/lockdown_manager.cpp
     src/realtime-protection/response/firewall_manager.cpp
 
