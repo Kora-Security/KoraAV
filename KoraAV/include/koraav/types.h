@@ -124,7 +124,7 @@ struct ScanConfig {
         scan_archives(true),
         follow_symlinks(true),
         scan_hidden_files(true),
-        max_file_size(100 * 1024 * 1024),  // 100MB
+        max_file_size(200 * 1024 * 1024),  // 200MB
         max_scan_depth(32),
         use_hash_db(true),
         use_yara(true),
