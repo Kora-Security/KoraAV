@@ -214,7 +214,7 @@ bool KoraAVDaemon::Initialize(const std::string& config_path) {
     std::cout << "✓ Quarantine manager initialized" << std::endl;
 
     // Initialize exclusion (whitelist) manager
-    exclusion_manager_ = std::make_unique<realtime::ExclusionManager>(config_.exclusion_db_path);
+    exclusion_manager_ = std::make_unique<ExclusionManager>(config_.exclusion_db_path);
     if (!exclusion_manager_->Initialize()) {
         std::cerr << "⚠️  Exclusion manager could not open database — "
                      "running without user exclusions" << std::endl;

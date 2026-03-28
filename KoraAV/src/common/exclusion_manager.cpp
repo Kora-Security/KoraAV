@@ -1,4 +1,4 @@
-// src/realtime-protection/response/exclusion_manager.cpp
+// src/common/exclusion_manager.cpp
 #include "exclusion_manager.h"
 #include <iostream>
 #include <algorithm>
@@ -10,7 +10,6 @@
 #include <pwd.h>
 
 namespace koraav {
-namespace realtime {
 
 // ════════════════════════════════════════════════════════════════════════════
 // Lifecycle
@@ -422,5 +421,5 @@ ExclusionManager::StringToType(const std::string& s) {
     return ExclusionType::PATH; // safe default
 }
 
-} // namespace realtime
+
 } // namespace koraav

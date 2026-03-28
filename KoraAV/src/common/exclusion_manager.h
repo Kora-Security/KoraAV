@@ -1,4 +1,4 @@
-// src/realtime-protection/response/exclusion_manager.h
+// src/common/exclusion_manager.h
 #pragma once
 
 #include <string>
@@ -9,7 +9,6 @@
 #include <sqlite3.h>
 
 namespace koraav {
-namespace realtime {
 
 /**
  * @brief SQLite3-backed exclusion (whitelist) manager.
@@ -135,5 +134,4 @@ private:
     uid_t koraav_uid_ = static_cast<uid_t>(-1);
 };
 
-} // namespace realtime
 } // namespace koraav

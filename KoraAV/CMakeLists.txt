@@ -98,6 +98,7 @@ add_library(koraav_common STATIC
 
 target_link_libraries(koraav_common
     ${CAP_LIBRARY}
+    ${SQLITE3_LIBRARIES}
 )
 
 # Link YARA to common library (since yara_manager lives here now)
@@ -156,11 +157,10 @@ add_library(koraav_realtime STATIC
 )
 
 target_link_libraries(koraav_realtime
-    koraav_common   # Provides YaraManager
+    koraav_common   # Provides YaraManager + ExclusionManager
     koraav_scanner  # For backwards compatibility
     ${CAP_LIBRARY}
     stdc++fs        # C++17 filesystem support (required for ransomware detector)
-    ${SQLITE3_LIBRARIES}
 )
 
 

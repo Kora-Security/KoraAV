@@ -20,7 +20,6 @@
 
 using namespace koraav;
 using namespace koraav::scanner;
-using namespace koraav::realtime;
 
 // Progress tracking (could be better looking lol)
 struct ProgressTracker {

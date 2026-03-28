@@ -158,7 +158,7 @@ namespace daemon {
 
         // Quarantine manager
         std::unique_ptr<QuarantineManager> quarantine_manager_;
-        std::unique_ptr<realtime::ExclusionManager> exclusion_manager_;
+        std::unique_ptr<ExclusionManager> exclusion_manager_;
 
         // Notification manager
         std::unique_ptr<NotificationManager> notification_manager_;
